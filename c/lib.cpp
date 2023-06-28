@@ -134,6 +134,16 @@ void usearch_view_mem_lazy(usearch_index_t index, char* data, usearch_error_t* e
     }
 }
 
+usearch_metadata_t usearch_metadata(usearch_index_t index, usearch_error_t*) {
+    usearch_metadata_t res;
+    precomputed_constants_t pre = reinterpret_cast<index_t*>(index)->metadata();
+
+    res.inverse_log_connectivity = pre.inverse_log_connectivity;
+    res.connectivity_max_base = pre.connectivity_max_base;
+    res.neighbors_bytes = pre.neighbors_bytes;
+    res.neighbors_base_bytes = pre.neighbors_base_bytes;
+    return res;
+}
 size_t usearch_size(usearch_index_t index, usearch_error_t*) { //
     return reinterpret_cast<index_t*>(index)->size();
 }

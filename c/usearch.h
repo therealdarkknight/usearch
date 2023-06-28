@@ -5,7 +5,8 @@
 extern "C" {
 #endif
 #include <stdbool.h> // `bool`
-#include <stdint.h>  // `size_t`
+#include <stdint.h>  // `uint64_t`
+#include <stddef.h>  // `size_t`
 
 typedef void* usearch_index_t;
 typedef uint64_t usearch_label_t;
@@ -49,6 +50,13 @@ typedef struct usearch_init_options_t {
     size_t expansion_search;
 } usearch_init_options_t;
 
+typedef struct {
+    double inverse_log_connectivity;
+    size_t connectivity_max_base;
+    size_t neighbors_bytes;
+    size_t neighbors_base_bytes;
+} usearch_metadata_t;
+
 usearch_index_t usearch_init(usearch_init_options_t*, usearch_error_t*);
 void usearch_free(usearch_index_t, usearch_error_t*);
 
@@ -58,6 +66,7 @@ void usearch_view(usearch_index_t, char const* path, usearch_error_t*);
 void usearch_view_mem(usearch_index_t index, char* data, usearch_error_t* error);
 void usearch_view_mem_lazy(usearch_index_t index, char* data, usearch_error_t* error);
 
+usearch_metadata_t usearch_metadata(usearch_index_t, usearch_error_t*);
 size_t usearch_size(usearch_index_t, usearch_error_t*);
 size_t usearch_capacity(usearch_index_t, usearch_error_t*);
 size_t usearch_dimensions(usearch_index_t, usearch_error_t*);
