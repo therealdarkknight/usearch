@@ -219,6 +219,7 @@ class index_punned_dense_gt {
     member_iterator_t end() { return typed_->end(); }
 
     stats_t stats() const { return typed_->stats(); }
+    precomputed_constants_t metadata() const { return typed_->metadata(); }
     stats_t stats(std::size_t level) const { return typed_->stats(level); }
 
     bool reserve(index_limits_t limits) { return typed_->reserve(limits); }

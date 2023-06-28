@@ -1029,6 +1029,12 @@ constexpr std::size_t default_allocator_entry_bytes() { return 64; }
 constexpr char const* default_magic() { return "usearch"; }
 
 /**
+ *  @brief  How much larger (number of neighbors per node) will
+ *          the base level be compared to other levels.
+ */
+constexpr std::size_t base_level_multiple() { return 2; }
+
+/**
  *  @brief  Configuration settings for the index construction.
  *          Includes the main `::connectivity` parameter (`M` in the paper)
  *          and two expansion factors - for construction and search.
@@ -1047,6 +1053,24 @@ struct index_config_t {
     /// to align to SIMD register size for higher performance with
     /// less split-loads.
     std::size_t vector_alignment = 1;
+};
+
+using neighbors_count_t = std::uint32_t;
+
+// todo:: I started regretting making this global. Maybe rethink it. it seems there is no other structure that is global
+// and used from the punned class
+struct precomputed_constants_t {
+    double inverse_log_connectivity{};
+    std::size_t connectivity_max_base{};
+    std::size_t neighbors_bytes{};
+    std::size_t neighbors_base_bytes{};
+
+    precomputed_constants_t(index_config_t const& config) noexcept
+        : inverse_log_connectivity(1.0 / std::log(static_cast<double>(config.connectivity))),
+          connectivity_max_base(config.connectivity * base_level_multiple()),
+          neighbors_bytes(config.connectivity * sizeof(id_t) + sizeof(neighbors_count_t)),
+          // todo:: is it ok to use one init variable from another in this kind of initializers?
+          neighbors_base_bytes(connectivity_max_base * sizeof(id_t) + sizeof(neighbors_count_t)) {}
 };
 
 struct index_limits_t {
@@ -1181,6 +1205,11 @@ struct file_head_result_t {
     scalar_kind_t scalar_kind;
     size_t size;
     entry_idx_t entry_idx;
+
+    // Derived structural:
+    size_t connectivity_max_base;
+    size_t neighbors_bytes;
+    size_t neighbors_base_bytes;
 
     // Additional:
     size_t bytes_for_graphs;
@@ -1379,7 +1408,6 @@ class index_gt {
     using reverse_const_iterator = std::reverse_iterator<member_citerator_t>;
 
   private:
-    using neighbors_count_t = std::uint32_t;
     using dim_t = std::uint32_t;
     using level_t = std::int32_t;
 
@@ -1392,24 +1420,12 @@ class index_gt {
                   "Allocator must allocate separate addressable bytes");
 
     /**
-     *  @brief  How much larger (number of neighbors per node) will
-     *          the base level be compared to other levels.
-     */
-    static constexpr std::size_t base_level_multiple_() { return 2; }
-
-    /**
      *  @brief  How many bytes of memory are needed to form the "head" of the node.
      */
     static constexpr std::size_t node_head_bytes_() { return sizeof(label_t) + sizeof(dim_t) + sizeof(level_t); }
 
     using visits_bitset_t = visits_bitset_gt<allocator_t>;
 
-    struct precomputed_constants_t {
-        double inverse_log_connectivity{};
-        std::size_t connectivity_max_base{};
-        std::size_t neighbors_bytes{};
-        std::size_t neighbors_base_bytes{};
-    };
     struct candidate_t {
         distance_t distance;
         id_t id;
@@ -1551,8 +1567,8 @@ class index_gt {
     explicit index_gt(index_config_t config = {}, metric_t metric = {}, allocator_t allocator = {},
                       point_allocator_t point_allocator = {}) noexcept
         : config_(config), limits_(0, 0), metric_(metric), allocator_(std::move(allocator)),
-          point_allocator_(std::move(point_allocator)), pre_(precompute_(config)), size_(0u), max_level_(-1),
-          entry_id_(0u), nodes_(nullptr), nodes_mutexes_(), contexts_(nullptr) {}
+          point_allocator_(std::move(point_allocator)), pre_(config), size_(0u), max_level_(-1), entry_id_(0u),
+          nodes_(nullptr), nodes_mutexes_(), contexts_(nullptr) {}
 
     /**
      *  @brief  Clones the structure with the same hyper-parameters, but without contents.
@@ -1705,11 +1721,11 @@ class index_gt {
      *          of neighbors in CPU-cache-aligned buffers.
      */
     static index_config_t optimize(index_config_t config) noexcept {
-        precomputed_constants_t pre = precompute_(config);
+        precomputed_constants_t pre(config);
         std::size_t bytes_per_node_base = node_head_bytes_() + pre.neighbors_base_bytes;
         std::size_t rounded_size = divide_round_up<64>(bytes_per_node_base) * 64;
         std::size_t added_connections = (rounded_size - bytes_per_node_base) / sizeof(id_t);
-        config.connectivity = config.connectivity + added_connections / base_level_multiple_();
+        config.connectivity = config.connectivity + added_connections / base_level_multiple();
         return config;
     }
 
@@ -1807,7 +1823,7 @@ class index_gt {
 
         // The top list needs one more slot than the connectivity of the base level
         // for the heuristic, that tries to squeeze one more element into saturated list.
-        std::size_t top_limit = (std::max)(base_level_multiple_() * config_.connectivity + 1, config.expansion);
+        std::size_t top_limit = (std::max)(base_level_multiple() * config_.connectivity + 1, config.expansion);
         if (!top.reserve(top_limit))
             return result.failed("Out of memory!");
         if (!next.reserve(config.expansion))
@@ -1958,7 +1974,7 @@ class index_gt {
         result.nodes = size();
         for (std::size_t i = 0; i != result.nodes; ++i) {
             node_t node = node_with_id_(i);
-            std::size_t max_edges = node.level() * config_.connectivity + base_level_multiple_() * config_.connectivity;
+            std::size_t max_edges = node.level() * config_.connectivity + base_level_multiple() * config_.connectivity;
             std::size_t edges = 0;
             for (level_t level = 0; level != node.level(); ++level)
                 edges += neighbors_(node, level).size();
@@ -1984,7 +2000,7 @@ class index_gt {
             result.allocated_bytes += node_head_bytes_() + node_vector_bytes_(node) + neighbors_bytes;
         }
 
-        std::size_t max_edges_per_node = level ? config_.connectivity : base_level_multiple_() * config_.connectivity;
+        std::size_t max_edges_per_node = level ? config_.connectivity : base_level_multiple() * config_.connectivity;
         result.max_edges = result.nodes * max_edges_per_node;
         return result;
     }
@@ -2151,7 +2167,7 @@ class index_gt {
 
             config_.connectivity = state.connectivity;
             config_.vector_alignment = state.vector_alignment;
-            pre_ = precompute_(config_);
+            pre_ = precomputed_constants_t(config_);
 
             index_limits_t limits;
             limits.elements = state.size;
@@ -2306,10 +2322,8 @@ class index_gt {
 
         node_with_id_ = [this, external_node_retriever](size_t index) {
             byte_t* tape = (byte_t*)external_node_retriever(index);
-            std::cerr << "external mem returned by node retriever is" << (const void*)tape << std::endl;
             dim_t dim = misaligned_load<dim_t>(tape + sizeof(label_t));
             level_t level = misaligned_load<level_t>(tape + sizeof(label_t) + sizeof(dim_t));
-            std::cerr << "dim and level are" << std::to_string(dim) << " " << std::to_string(level) << std::endl;
 
             std::size_t node_bytes = node_bytes_(dim, level);
             std::size_t node_vector_bytes = dim * sizeof(scalar_t);
@@ -2327,6 +2341,7 @@ class index_gt {
         };
     }
 
+    precomputed_constants_t metadata() { return pre_; }
 #pragma endregion
 
   private:
@@ -2343,15 +2358,6 @@ class index_gt {
         close(viewed_file_.file_descriptor);
 #endif
         viewed_file_ = {};
-    }
-
-    inline static precomputed_constants_t precompute_(index_config_t const& config) noexcept {
-        precomputed_constants_t pre;
-        pre.connectivity_max_base = config.connectivity * base_level_multiple_();
-        pre.inverse_log_connectivity = 1.0 / std::log(static_cast<double>(config.connectivity));
-        pre.neighbors_bytes = config.connectivity * sizeof(id_t) + sizeof(neighbors_count_t);
-        pre.neighbors_base_bytes = pre.connectivity_max_base * sizeof(id_t) + sizeof(neighbors_count_t);
-        return pre;
     }
 
     inline std::size_t node_bytes_(node_t node) const noexcept { return node_bytes_(node.dim(), node.level()); }
@@ -2693,7 +2699,7 @@ class index_gt {
 
         config_.connectivity = state.connectivity;
         config_.vector_alignment = state.vector_alignment;
-        pre_ = precompute_(config_);
+        pre_ = precomputed_constants_t(config_);
 
         index_limits_t limits;
         limits.elements = state.size;
@@ -2731,6 +2737,12 @@ inline file_head_result_t index_metadata(char const* file_path) noexcept {
     if (std::strncmp(state.magic, default_magic(), std::strlen(default_magic())) != 0)
         return result.failed("Wrong MIME type!");
 
+    // add precomputed constants to the resulting metadata
+    index_config_t config;
+    config.connectivity = state.connectivity;
+    config.vector_alignment = state.vector_alignment;
+    precomputed_constants_t pre = precomputed_constants_t(config);
+
     result.version_major = state.version_major;
     result.version_minor = state.version_minor;
     result.version_patch = state.version_patch;
@@ -2746,6 +2758,11 @@ inline file_head_result_t index_metadata(char const* file_path) noexcept {
     result.bytes_for_graphs = state.bytes_for_graphs;
     result.bytes_for_vectors = state.bytes_for_vectors;
     result.bytes_checksum = state.bytes_checksum;
+
+    result.connectivity_max_base = pre.connectivity_max_base;
+    result.neighbors_base_bytes = pre.neighbors_base_bytes;
+    result.neighbors_bytes = pre.neighbors_bytes;
+
     return result;
 }
 
