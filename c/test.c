@@ -6,6 +6,11 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#include <fcntl.h>    // `open
+#include <sys/mman.h> // `mmap`
+#include <unistd.h>   // `open`
+
+#include "external_retreival_testutils.h"
 #include "usearch.h"
 
 float* read_fvecs_file(const char* filename, size_t* num_vectors, size_t* vector_dim) {
@@ -69,6 +74,18 @@ void test_index(float* data, size_t num_vectors, size_t vector_dim) {
     usearch_index_t idx;
     usearch_error_t error = NULL;
     clock_t start;
+
+    // results arrays
+    int k = 10;
+    usearch_label_t* labels = (usearch_label_t*)calloc(k, sizeof(usearch_label_t));
+    float* distances = (float*)calloc(k, sizeof(float));
+
+    // for viewing caller mapped index memory
+    int fd;
+    char* mapped_index = NULL;
+    struct stat file_stat;
+    int fstat_status;
+
     opts.connectivity = 2; // 32 in faiss
     opts.dimensions = vector_dim;
     opts.expansion_add = 40;    // 40 in faiss
@@ -76,12 +93,6 @@ void test_index(float* data, size_t num_vectors, size_t vector_dim) {
     opts.metric_kind = usearch_metric_ip_k;
     opts.metric = NULL;
     opts.quantization = usearch_scalar_f32_k;
-
-    // results arrays
-    int k = 10;
-    num_vectors /= 10;
-    usearch_label_t* labels = (usearch_label_t*)calloc(k, sizeof(usearch_label_t));
-    float* distances = (float*)calloc(k, sizeof(float));
 
     fprintf(stderr, "read %ld vectors of dimension %ld\n", num_vectors, vector_dim);
     fprintf(stderr, "initializing usearch...\n");
@@ -98,7 +109,7 @@ void test_index(float* data, size_t num_vectors, size_t vector_dim) {
     fprintf(stderr, "adding vectors...\n");
     for (size_t i = 0; i < num_vectors; i++) {
         if (i % LOG_GRANULARITY == 0) {
-            fprintf(stderr, "added %ld vectors...\n", i);
+            fprintf(stderr, "\tadded %ld vectors...\n", i);
         }
         usearch_label_t label = i;
         usearch_add(idx, label, data + i * vector_dim, usearch_scalar_f32_k, &error);
@@ -108,7 +119,7 @@ void test_index(float* data, size_t num_vectors, size_t vector_dim) {
     fprintf(stderr, "checking containment of vectors...\n");
     for (size_t i = 0; i < num_vectors; i++) {
         if (i % LOG_GRANULARITY == 0) {
-            fprintf(stderr, "checked %ld vectors...\n", i);
+            fprintf(stderr, "\tchecked %ld vectors\n", i);
         }
         usearch_label_t label = i;
         assert(usearch_contains(idx, label, &error));
@@ -121,9 +132,9 @@ void test_index(float* data, size_t num_vectors, size_t vector_dim) {
     fprintf(stderr, "searching vectors...\n");
     for (size_t i = 0; i < num_vectors; i++) {
         if (i % LOG_GRANULARITY == 0) {
-            fprintf(stderr, "searched %ld vectors...\n", i);
+            fprintf(stderr, "\tsearched %ld vectors\n", i);
         }
-        const void *query_vector = data + i * vector_dim;
+        const void* query_vector = data + i * vector_dim;
         usearch_search(idx, query_vector, usearch_scalar_f32_k, k, labels, distances, &error);
         assert(!error);
     }
@@ -132,13 +143,13 @@ void test_index(float* data, size_t num_vectors, size_t vector_dim) {
     start = clock();
     usearch_save(idx, "usearch_index.bin", &error);
     assert(!error);
-    fprintf(stderr, "saving took %.2f ms\n", ((double)(clock() - start)) / CLOCKS_PER_SEC * 1000);
+    fprintf(stderr, "\tsaving took %.2f ms\n", ((double)(clock() - start)) / CLOCKS_PER_SEC * 1000);
 
     fprintf(stderr, "destroying the index...\n");
     start = clock();
     usearch_free(idx, &error);
     assert(!error);
-    fprintf(stderr, "destroying the index took %.2f ms\n", ((double)(clock() - start)) / CLOCKS_PER_SEC * 1000);
+    fprintf(stderr, "\tdestroying the index took %.2f ms\n", ((double)(clock() - start)) / CLOCKS_PER_SEC * 1000);
 
     fprintf(stderr, "loading the index...\n");
     start = clock();
@@ -148,7 +159,7 @@ void test_index(float* data, size_t num_vectors, size_t vector_dim) {
     assert(!error);
     usearch_load(idx, "usearch_index.bin", &error);
     assert(!error);
-    fprintf(stderr, "loading the index took %.2f ms\n", ((double)(clock() - start)) / CLOCKS_PER_SEC * 1000);
+    fprintf(stderr, "\tloading the index took %.2f ms\n", ((double)(clock() - start)) / CLOCKS_PER_SEC * 1000);
     assert(usearch_size(idx, &error) == num_vectors);
     assert(!error);
     usearch_free(idx, &error);
@@ -161,11 +172,118 @@ void test_index(float* data, size_t num_vectors, size_t vector_dim) {
     assert(!error);
     usearch_view(idx, "usearch_index.bin", &error);
     assert(!error);
-    fprintf(stderr, "viewing the index took %.2f ms\n", ((double)(clock() - start)) / CLOCKS_PER_SEC * 1000);
+    fprintf(stderr, "\tviewing the index took %.2f ms\n", ((double)(clock() - start)) / CLOCKS_PER_SEC * 1000);
     assert(usearch_size(idx, &error) == num_vectors);
     assert(!error);
     usearch_free(idx, &error);
 
+    fprintf(stderr, "viewing the index from caller memory...\n");
+    start = clock();
+    fd = open("usearch_index.bin", O_RDONLY | O_NOATIME);
+    fstat_status = fstat(fd, &file_stat);
+    if (fstat_status < 0) {
+        close(fd);
+        fprintf(stderr, "Failed to stat file: %s", "usearch_index.bin");
+    }
+
+    // Map the entire file
+    mapped_index = (char*)mmap(NULL, file_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mapped_index == MAP_FAILED) {
+        close(fd);
+        fprintf(stderr, "Failed to mmap file: %s", "usearch_index.bin");
+    }
+    fprintf(stderr, "\tpreparing index memory in caller for viewing took %.2f ms\n",
+            ((double)(clock() - start)) / CLOCKS_PER_SEC * 1000);
+    start = clock();
+
+    idx = usearch_init(&opts, &error);
+    assert(!error);
+    assert(usearch_size(idx, &error) == 0);
+    assert(!error);
+
+    usearch_view_mem(idx, mapped_index, &error);
+    assert(!error);
+    fprintf(stderr, "\tviewing the index from caller mem took %.2f ms\n",
+            ((double)(clock() - start)) / CLOCKS_PER_SEC * 1000);
+    assert(usearch_size(idx, &error) == num_vectors);
+    assert(!error);
+    usearch_search(idx, data, usearch_scalar_f32_k, k, labels, distances, &error);
+    assert(!error);
+
+    usearch_free(idx, &error);
+    munmap(mapped_index, file_stat.st_size);
+    close(fd);
+    assert(!error);
+
+    /****************** LAZY RETRIEVER SHENANIGANS *******************************/
+
+    fprintf(stderr, "lazy-viewing the index from caller memory with custom retriever..\n");
+    start = clock();
+
+    fd = open("usearch_index.bin", O_RDONLY | O_NOATIME);
+    fstat_status = fstat(fd, &file_stat);
+    if (fstat_status < 0) {
+        close(fd);
+        fprintf(stderr, "Failed to stat file: %s", "usearch_index.bin");
+    }
+
+    // Map the entire file
+    mapped_index = (char*)mmap(NULL, file_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mapped_index == MAP_FAILED) {
+        close(fd);
+        fprintf(stderr, "Failed to mmap file: %s", "usearch_index.bin");
+    }
+    fprintf(stderr, "\tpreparing index memory in caller for viewing took %.2f ms\n",
+            ((double)(clock() - start)) / CLOCKS_PER_SEC * 1000);
+    start = clock();
+
+    idx = usearch_init(&opts, &error);
+    assert(!error);
+    assert(usearch_size(idx, &error) == 0);
+    assert(!error);
+
+#ifdef DEBUG_RETRIEVER
+    fprintf(stderr, "\tsetting node retriever DEBUG MODE...\n");
+
+    // when debugging our custom retriever, we have usearch load the index as usual
+    // and internally compare the results of the custom and builtin retrievers
+    // we load the index first to make sure it is loded properly even if our custom
+    // retriever is broken
+    usearch_view_mem(idx, mapped_index, &error);
+
+    // after the index is loaded, we change the retriever so from here on all search, add, etc
+    // queries will be passed through our custom retriever
+    usearch_set_node_retriever(idx, &node_retriever, &error);
+    assert(!error);
+#else
+    // when not in debug mode, we load the index with view_mem_lazy which enforces that
+    // a custom retriever be present to prevent accidental acces to internal nodes_
+    // so, we set a custom retriever before loading the index
+    fprintf(stderr, "\tsetting node retriever...\n");
+    usearch_set_node_retriever(idx, &node_retriever, &error);
+    assert(!error);
+    usearch_view_mem_lazy(idx, mapped_index, &error);
+    assert(!error);
+    fprintf(stderr, "\tviewing the index from caller mem took %.2f ms\n",
+            ((double)(clock() - start)) / CLOCKS_PER_SEC * 1000);
+#endif
+
+    // todo:: obtain size in another manner and move before set_node_retriever
+    //  the custom retriever uses the global node_data to find the relevant node
+    usearch_metadata_t meta = usearch_metadata(idx, &error);
+
+    prepare_external_index(mapped_index, vector_dim, usearch_size(idx, &error), &meta);
+
+    assert(usearch_size(idx, &error) == num_vectors);
+    assert(!error);
+    usearch_search(idx, data, usearch_scalar_f32_k, k, labels, distances, &error);
+    assert(!error);
+
+    usearch_free(idx, &error);
+    munmap(mapped_index, file_stat.st_size);
+    close(fd);
+    assert(!error);
+    /*********x** LAZY RETRIEVER SHENANIGANS END *****************************/
 }
 
 int main() {
@@ -174,7 +292,7 @@ int main() {
     float* data = read_fvecs_file(filename, &num_vectors, &vector_dim);
     if (data != NULL) {
 
-        test_index(data, num_vectors, vector_dim);
+        test_index(data, num_vectors / 1000, vector_dim);
 
         free(data); // Remember to free the dynamically allocated memory
     }

@@ -1,19 +1,32 @@
 CXX = g++
 CC = gcc
 
-C_CXX_FLAGS = -pedantic -Wall -Wextra -Wno-conversion -Wno-unknown-pragmas
-C_CXX_FLAGS += -O3 -march=native
+C_CXX_FLAGS := -pedantic -Wall -Wextra -Wno-conversion -Wno-unknown-pragmas
+C_CXX_DEBUG_FLAGS := $(C_CXX_FLAGS)
 
-C_FLAGS = -std=c99
+C_CXX_FLAGS += -O3 -march=native
+C_CXX_DEBUG_FLAGS += -g -O0
+
+C_FLAGS := -std=c99
 
 CXX_FLAGS =
 
 HEADER_INCLUDES = -I.  -I ../include/  -I ../fp16/include/ -I ../robin-map/include/
 
+# pass additional cflag options via make OPTS=
+
+
 .PHONY: build
 build:
-	$(CXX) $(C_CXX_FLAGS) $(CXX_FLAGS) -o libusearch.so -O3 lib.cpp $(HEADER_INCLUDES) -shared -fPIC
+	$(CXX) $(OPTS) $(C_CXX_FLAGS) $(CXX_FLAGS) -o libusearch.so lib.cpp $(HEADER_INCLUDES) -shared -fPIC
+
+debug:
+	$(CXX) $(OPTS) $(C_CXX_DEBUG_FLAGS) $(CXX_FLAGS) -o libusearch.so lib.cpp $(HEADER_INCLUDES) -shared -fPIC
+
+.PHONY: static
+static:
+	$(CXX) $(OPTS) $(C_CXX_FLAGS) $(CXX_FLAGS) -o libusearch.a lib.cpp $(HEADER_INCLUDES) -shared -static -fPIC
 
 .PHONY: test
 test:
-	$(CC) $(C_CXX_FLAGS) $(CXX_FLAGS) test.c -L. -lusearch -Wl,-rpath,. -o test
+	$(CC) $(OPTS) -D_GNU_SOURCE $(C_CXX_DEBUG_FLAGS) $(CX_FLAGS) test.c external_retreival_testutils.c -L. -lusearch -Wl,-rpath,. -o test
