@@ -172,6 +172,8 @@ class index_punned_dense_gt {
     using serialization_result_t = typename index_t::serialization_result_t;
     using stats_t = typename index_t::stats_t;
 
+    using node_retriever_t = typename index_t::node_retriever_t;
+
     index_punned_dense_gt() = default;
     index_punned_dense_gt(index_punned_dense_gt&& other) { swap(other); }
     index_punned_dense_gt& operator=(index_punned_dense_gt&& other) {
@@ -235,6 +237,23 @@ class index_punned_dense_gt {
             reindex_labels();
         return result;
     }
+
+    serialization_result_t view_mem(char* memory) {
+        serialization_result_t result = typed_->view_mem(memory);
+        if (result)
+            reindex_labels();
+        return result;
+    }
+
+    serialization_result_t view_mem_lazy(char* memory) {
+        serialization_result_t result = typed_->view_mem_lazy(memory);
+        // lazy mem loading does not support containment queries for startup speed
+        // if (result)
+        //     reindex_labels();
+        return result;
+    }
+
+    void set_node_retriever(node_retriever_t node_retriever) { typed_->set_node_retriever(node_retriever); }
 
     std::size_t memory_usage(std::size_t allocator_entry_bytes = default_allocator_entry_bytes()) const {
         return typed_->memory_usage(allocator_entry_bytes);

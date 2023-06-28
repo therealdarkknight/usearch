@@ -72,6 +72,9 @@
 #include <thread>    // `std::thread`
 #include <utility>   // `std::pair`
 
+#include <functional> // `std::function`
+#include <iostream>   // temporary, for std::count and stdd::cerr
+
 // Prefetching
 #if defined(USEARCH_DEFINED_GCC)
 // https://gcc.gnu.org/onlinedocs/gcc/Other-Builtins.html
@@ -1521,6 +1524,12 @@ class index_gt {
 
     using node_allocator_t = typename allocator_traits_t::template rebind_alloc<node_t>;
     node_t* nodes_{};
+
+    // used to index into `nodes_` array
+    // the original node_with_id_ member function is still available as builtin_node_with_id_()
+    std::function<node_t(std::size_t)> node_with_id_ = [this](std::size_t idx) { return nodes_[idx]; };
+    bool custom_node_retriever_ = false;
+    bool debug_node_retriever_ = false;
     mutable visits_bitset_t nodes_mutexes_{};
 
     using context_allocator_t = typename allocator_traits_t::template rebind_alloc<context_t>;
@@ -1629,19 +1638,27 @@ class index_gt {
 
         usearch_assert_m(limits.elements >= size_, "Can't drop existing values");
 
+        // this prob. stays. it is one bit per vector so not an issue
+        // for comparison, with heaviest quantization, a 128dim vector is 128*4 bits/entry = 512 bits
         if (!nodes_mutexes_.resize(limits.elements))
             return false;
 
         node_allocator_t node_allocator;
-        node_t* new_nodes = node_allocator.allocate(limits.elements);
-        if (!new_nodes)
-            return false;
+        node_t* new_nodes = nullptr;
+        // do not allocate nodes_ when node_with_id_ is an external function
+        // external node_ storage is used in this case
+        if (!custom_node_retriever_ || (custom_node_retriever_ && debug_node_retriever_)) {
+            new_nodes = node_allocator.allocate(limits.elements);
+            if (!new_nodes)
+                return false;
+        }
 
         std::size_t limits_threads = limits.threads();
         context_allocator_t context_allocator;
         context_t* new_contexts = context_allocator.allocate(limits_threads);
         if (!new_contexts) {
-            node_allocator.deallocate(new_nodes, limits.elements);
+            if (new_nodes)
+                node_allocator.deallocate(new_nodes, limits.elements);
             return false;
         }
         for (std::size_t i = 0; i != limits_threads; ++i) {
@@ -1651,7 +1668,8 @@ class index_gt {
             if (!context.visits.resize(limits.elements)) {
                 for (std::size_t j = 0; j != i; ++j)
                     context.visits.reset();
-                node_allocator.deallocate(new_nodes, limits.elements);
+                if (new_nodes)
+                    node_allocator.deallocate(new_nodes, limits.elements);
                 context_allocator.deallocate(new_contexts, limits_threads);
                 return false;
             }
@@ -1669,8 +1687,7 @@ class index_gt {
             old_context.visits.reset();
         }
 
-        // Move the nodes info, and deallocate previous buffers.
-        if (nodes_)
+        if (new_nodes && nodes_)
             std::memcpy(new_nodes, nodes_, sizeof(node_t) * size()),
                 node_allocator.deallocate(nodes_, limits_.elements);
         if (contexts_)
@@ -2115,6 +2132,8 @@ class index_gt {
         };
 
         // Read the header
+        // todo:: delete this and outsource the functionality to load_index_header()
+        // remember to close the file from outside since load_index_header will not do that
         {
             read_chunk(&state_buffer[0], sizeof(file_header_t));
             if (result.error)
@@ -2173,6 +2192,50 @@ class index_gt {
         return {};
     }
 
+    serialization_result_t view_mem_lazy(byte_t* file) noexcept {
+        serialization_result_t result;
+        result = load_index_header(file);
+        if (result.error) {
+            // q:: this generates a warning "moving a local object in a return statement prevents copy elision"
+            //  but if I do not move, it seems result is actually copied and the restructor of this function's copy
+            //  raises when ~error_t is called.
+            //  what is the right approach to make sure result is moved/constructed at destination?
+            //  I read that return std::move is bad practice so probably this is not the right approach
+            return std::move(result);
+        }
+
+        if (!custom_node_retriever_)
+            return result.failed("custom node retriever must be set for lazy index loading");
+#ifdef DEBUG_RETRIEVER
+        return result.failed("for retriever debugging you must eagerly load the index into usearch with view_mem");
+#endif
+        return std::move(result);
+    }
+
+    serialization_result_t view_mem(byte_t* file) noexcept {
+        serialization_result_t result;
+        // Parse and load the header
+        result = load_index_header(file);
+        if (result.error) {
+            return result;
+        }
+
+        // Locate every node packed into file
+        std::size_t progress = sizeof(file_header_t);
+        for (std::size_t i = 0; i != size_; ++i) {
+            byte_t* tape = (byte_t*)(file + progress);
+            dim_t dim = misaligned_load<dim_t>(tape + sizeof(label_t));
+            level_t level = misaligned_load<level_t>(tape + sizeof(label_t) + sizeof(dim_t));
+
+            std::size_t node_bytes = node_bytes_(dim, level);
+            std::size_t node_vector_bytes = dim * sizeof(scalar_t);
+            nodes_[i] = node_t{tape, (scalar_t*)(tape + node_bytes - node_vector_bytes)};
+            progress += node_bytes;
+            max_level_ = (std::max)(max_level_, level);
+        }
+
+        return {};
+    }
     /**
      *  @brief  Memory-maps the serialized binary index representation from disk,
      *          @b without copying the vectors and neighbors lists into RAM.
@@ -2231,49 +2294,37 @@ class index_gt {
         viewed_file_.ptr = file;
         viewed_file_.length = file_stat.st_size;
 #endif // Platform specific code
+        return view_mem(file);
+    }
 
-        // Read the header
-        {
-            file_head_t state{file};
-            if (state.bytes_per_label != sizeof(label_t)) {
-                reset_view_();
-                return result.failed("Incompatible label type!");
-            }
-            if (state.bytes_per_id != sizeof(id_t)) {
-                reset_view_();
-                return result.failed("Incompatible ID type!");
-            }
+    using node_retriever_t = std::function<void*(size_t index)>;
+    void set_node_retriever(node_retriever_t external_node_retriever) noexcept {
+        custom_node_retriever_ = true;
+#ifdef DEBUG_RETRIEVER
+        debug_node_retriever_ = true;
+#endif
 
-            config_.connectivity = state.connectivity;
-            config_.vector_alignment = state.vector_alignment;
-            pre_ = precompute_(config_);
-
-            index_limits_t limits;
-            limits.elements = state.size;
-            limits.threads_add = 0;
-            if (!reserve(limits))
-                return result.failed("Out of memory!");
-
-            size_ = state.size;
-            max_level_ = static_cast<level_t>(state.max_level);
-            entry_id_ = static_cast<id_t>(state.entry_idx);
-        }
-
-        // Locate every node packed into file
-        std::size_t progress = sizeof(file_header_t);
-        for (std::size_t i = 0; i != size_; ++i) {
-            byte_t* tape = (byte_t*)(file + progress);
+        node_with_id_ = [this, external_node_retriever](size_t index) {
+            byte_t* tape = (byte_t*)external_node_retriever(index);
+            std::cerr << "external mem returned by node retriever is" << (const void*)tape << std::endl;
             dim_t dim = misaligned_load<dim_t>(tape + sizeof(label_t));
             level_t level = misaligned_load<level_t>(tape + sizeof(label_t) + sizeof(dim_t));
+            std::cerr << "dim and level are" << std::to_string(dim) << " " << std::to_string(level) << std::endl;
 
             std::size_t node_bytes = node_bytes_(dim, level);
             std::size_t node_vector_bytes = dim * sizeof(scalar_t);
-            nodes_[i] = node_t{tape, (scalar_t*)(tape + node_bytes - node_vector_bytes)};
-            progress += node_bytes;
-            max_level_ = (std::max)(max_level_, level);
-        }
 
-        return {};
+            node_t node = node_t{tape, (scalar_t*)(tape + node_bytes - node_vector_bytes)};
+#ifdef DEBUG_RETRIEVER
+            node_t correct_node = builtin_node_with_id_(index);
+            if (correct_node.tape() != node.tape()) {
+                std::cerr << "node retriever is incorrect. expected tape at addr " << (const void*)correct_node.tape()
+                          << "but got " << (const void*)node.tape() << std::endl;
+                throw std::runtime_error("node retriever is incorrect");
+            }
+#endif
+            return node;
+        };
     }
 
 #pragma endregion
@@ -2353,7 +2404,7 @@ class index_gt {
         return node;
     }
 
-    inline node_t node_with_id_(std::size_t idx) const noexcept { return nodes_[idx]; }
+    inline node_t builtin_node_with_id_(std::size_t idx) const noexcept { return nodes_[idx]; }
     inline neighbors_ref_t neighbors_base_(node_t node) const noexcept { return {node.neighbors_tape()}; }
 
     inline neighbors_ref_t neighbors_non_base_(node_t node, level_t level) const noexcept {
@@ -2624,6 +2675,36 @@ class index_gt {
 
         top.shrink(submitted_count);
         return {top_data, submitted_count};
+    }
+
+    serialization_result_t load_index_header(byte_t* file) {
+        serialization_result_t result;
+        file_head_t state{file};
+        if (state.bytes_per_label != sizeof(label_t)) {
+            reset_view_();
+            return result.failed("Incompatible label type!");
+        }
+        if (state.bytes_per_id != sizeof(id_t)) {
+            reset_view_();
+            return result.failed("Incompatible ID type!");
+        }
+        if (std::strncmp(state.magic, default_magic(), std::strlen(default_magic())) != 0)
+            return result.failed("Wrong MIME type!");
+
+        config_.connectivity = state.connectivity;
+        config_.vector_alignment = state.vector_alignment;
+        pre_ = precompute_(config_);
+
+        index_limits_t limits;
+        limits.elements = state.size;
+        limits.threads_add = 0;
+        if (!reserve(limits))
+            return result.failed("Out of memory!");
+
+        size_ = state.size;
+        max_level_ = static_cast<level_t>(state.max_level);
+        entry_id_ = static_cast<id_t>(state.entry_idx);
+        return result;
     }
 };
 

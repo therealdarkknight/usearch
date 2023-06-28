@@ -1,5 +1,6 @@
 #include "../include/usearch/index_punned_dense.hpp"
 #include <cassert>
+#include <functional>
 
 extern "C" {
 #include "usearch.h"
@@ -117,6 +118,22 @@ void usearch_view(usearch_index_t index, char const* path, usearch_error_t* erro
         *error = result.error.what();
 }
 
+void usearch_view_mem(usearch_index_t index, char* data, usearch_error_t* error) {
+    serialization_result_t result = reinterpret_cast<index_t*>(index)->view_mem(data);
+    if (!result)
+        *error = result.error.what();
+}
+
+void usearch_view_mem_lazy(usearch_index_t index, char* data, usearch_error_t* error) {
+    serialization_result_t result = reinterpret_cast<index_t*>(index)->view_mem_lazy(data);
+    if (!result) {
+        *error = result.error.what();
+        // error needs to be rest. otherwise error_t destructor will raise.
+        // todo:: fix for the rest of the interface
+        result.error = nullptr;
+    }
+}
+
 size_t usearch_size(usearch_index_t index, usearch_error_t*) { //
     return reinterpret_cast<index_t*>(index)->size();
 }
@@ -171,5 +188,10 @@ bool usearch_get(                                 //
 void usearch_remove(usearch_index_t, usearch_label_t, usearch_error_t* error) {
     if (error != nullptr)
         *error = "Usearch does not support removal of elements yet.";
+}
+
+void usearch_set_node_retriever(usearch_index_t index, usearch_node_retriever_t retriever, usearch_error_t*) {
+    auto typed_func = index_t::node_retriever_t{retriever};
+    reinterpret_cast<index_t*>(index)->set_node_retriever(typed_func);
 }
 }

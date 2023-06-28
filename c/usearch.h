@@ -8,11 +8,12 @@ extern "C" {
 #include <stdint.h>  // `size_t`
 
 typedef void* usearch_index_t;
-typedef uint32_t usearch_label_t;
+typedef uint64_t usearch_label_t;
 typedef float usearch_distance_t;
 typedef char const* usearch_error_t;
 
 typedef usearch_distance_t (*usearch_metric_t)(void const*, void const*);
+typedef void* (*usearch_node_retriever_t)(long unsigned int index);
 
 typedef enum usearch_metric_kind_t {
     usearch_metric_ip_k = 0,
@@ -54,6 +55,8 @@ void usearch_free(usearch_index_t, usearch_error_t*);
 void usearch_save(usearch_index_t, char const* path, usearch_error_t*);
 void usearch_load(usearch_index_t, char const* path, usearch_error_t*);
 void usearch_view(usearch_index_t, char const* path, usearch_error_t*);
+void usearch_view_mem(usearch_index_t index, char* data, usearch_error_t* error);
+void usearch_view_mem_lazy(usearch_index_t index, char* data, usearch_error_t* error);
 
 size_t usearch_size(usearch_index_t, usearch_error_t*);
 size_t usearch_capacity(usearch_index_t, usearch_error_t*);
@@ -81,6 +84,8 @@ bool usearch_get(                     //
     void* vector, usearch_scalar_kind_t vector_kind, usearch_error_t*);
 
 void usearch_remove(usearch_index_t, usearch_label_t, usearch_error_t*);
+
+void usearch_set_node_retriever(usearch_index_t index, usearch_node_retriever_t retriever, usearch_error_t* error);
 
 #ifdef __cplusplus
 }
