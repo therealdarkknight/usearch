@@ -16,14 +16,14 @@ void print_level_histo(int* all_levels, int len) {
 }
 
 char* extract_node(char* data, int progress, int dim, usearch_metadata_t* metadata, /*->>output*/ int* node_size,
-                    int* level) {
+                   int* level) {
     const int NODE_HEAD_BYTES = sizeof(usearch_label_t) + 4 /*sizeof dim */ + 4 /*sizeof level*/;
     const int VECTOR_BYTES = dim * sizeof(float);
     int node_bytes = 0;
     char* tape = data + progress;
     int read_dim_bytes = -1;
     memcpy(&read_dim_bytes, tape + sizeof(usearch_label_t), 4); //+sizeof(label)
-    memcpy(level, tape + sizeof(usearch_label_t) + 4, 4);      //+sizeof(label)+sizeof(dim)
+    memcpy(level, tape + sizeof(usearch_label_t) + 4, 4);       //+sizeof(label)+sizeof(dim)
     assert(VECTOR_BYTES == read_dim_bytes);
     node_bytes += NODE_HEAD_BYTES + metadata->neighbors_base_bytes;
     node_bytes += metadata->neighbors_bytes * *level;
@@ -47,8 +47,7 @@ void prepare_external_index(char* mapped_index, int dim, size_t num_vectors, use
     // node_levels = (int*)calloc(num_vectors, sizeof(int));
     assert(nodes != NULL);
     for (size_t i = 0; i < num_vectors; i++) {
-        nodes[i] =
-            extract_node(mapped_index, progress, dim, metadata, /*->>output*/ &node_size, &level);
+        nodes[i] = extract_node(mapped_index, progress, dim, metadata, /*->>output*/ &node_size, &level);
         if ((size_t)level > sizeof(all_levels) / sizeof(int)) {
             fprintf(stderr, "warn: large level %d\n", level);
         } else {

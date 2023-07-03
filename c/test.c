@@ -86,7 +86,7 @@ void test_index(float* data, size_t num_vectors, size_t vector_dim) {
     struct stat file_stat;
     int fstat_status;
 
-    opts.connectivity = 2; // 32 in faiss
+    opts.connectivity = 16; // 32 in faiss
     opts.dimensions = vector_dim;
     opts.expansion_add = 40;    // 40 in faiss
     opts.expansion_search = 16; // 10 in faiss
@@ -179,7 +179,11 @@ void test_index(float* data, size_t num_vectors, size_t vector_dim) {
 
     fprintf(stderr, "viewing the index from caller memory...\n");
     start = clock();
+#if defined(USEARCH_DEFINED_LINUX)
     fd = open("usearch_index.bin", O_RDONLY | O_NOATIME);
+#else
+    fd = open("usearch_index.bin", O_RDONLY);
+#endif
     fstat_status = fstat(fd, &file_stat);
     if (fstat_status < 0) {
         close(fd);
@@ -220,7 +224,11 @@ void test_index(float* data, size_t num_vectors, size_t vector_dim) {
     fprintf(stderr, "lazy-viewing the index from caller memory with custom retriever..\n");
     start = clock();
 
+#if defined(USEARCH_DEFINED_LINUX)
     fd = open("usearch_index.bin", O_RDONLY | O_NOATIME);
+#else
+    fd = open("usearch_index.bin", O_RDONLY);
+#endif
     fstat_status = fstat(fd, &file_stat);
     if (fstat_status < 0) {
         close(fd);
@@ -292,7 +300,7 @@ int main() {
     float* data = read_fvecs_file(filename, &num_vectors, &vector_dim);
     if (data != NULL) {
 
-        test_index(data, num_vectors / 1000, vector_dim);
+        test_index(data, num_vectors / 100, vector_dim);
 
         free(data); // Remember to free the dynamically allocated memory
     }

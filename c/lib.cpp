@@ -88,7 +88,9 @@ usearch_index_t usearch_init(usearch_init_options_t* options, usearch_error_t* e
         return nullptr;
     }
 
-    index_config_t config = {options->connectivity, sizeof(float)};
+    index_config_t config{};
+    config.connectivity = options->connectivity;
+    config.vector_alignment = sizeof(float);
     index_t index =
         index_t::make(options->dimensions, to_native_metric(options->metric_kind), config,
                       to_native_scalar(options->quantization), options->expansion_add, options->expansion_search);

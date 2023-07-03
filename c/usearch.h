@@ -14,7 +14,7 @@ typedef float usearch_distance_t;
 typedef char const* usearch_error_t;
 
 typedef usearch_distance_t (*usearch_metric_t)(void const*, void const*);
-typedef void* (*usearch_node_retriever_t)(long unsigned int index);
+typedef void* (*usearch_node_retriever_t)(int index);
 
 typedef enum usearch_metric_kind_t {
     usearch_metric_ip_k = 0,

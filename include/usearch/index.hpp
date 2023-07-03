@@ -1064,7 +1064,7 @@ struct precomputed_constants_t {
     std::size_t connectivity_max_base{};
     std::size_t neighbors_bytes{};
     std::size_t neighbors_base_bytes{};
-
+    precomputed_constants_t() {}
     precomputed_constants_t(index_config_t const& config) noexcept
         : inverse_log_connectivity(1.0 / std::log(static_cast<double>(config.connectivity))),
           connectivity_max_base(config.connectivity * base_level_multiple()),
@@ -1543,7 +1543,8 @@ class index_gt {
 
     // used to index into `nodes_` array
     // the original node_with_id_ member function is still available as builtin_node_with_id_()
-    std::function<node_t(std::size_t)> node_with_id_ = [this](std::size_t idx) { return nodes_[idx]; };
+    // todo:: uint32_t here should be id_t. change it once I figure out a way to enforce these in the c bindings
+    std::function<node_t(std::uint32_t)> node_with_id_ = [this](std::uint32_t idx) { return nodes_[idx]; };
     bool custom_node_retriever_ = false;
     bool debug_node_retriever_ = false;
     mutable visits_bitset_t nodes_mutexes_{};
