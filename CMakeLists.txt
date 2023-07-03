@@ -1,7 +1,7 @@
 # This CMake file is heavily inspired by following `usearch` CMake:
 # https://github.com/nlohmann/json/blob/develop/CMakeLists.txt
 cmake_minimum_required(VERSION 3.1)
-project(usearch VERSION 0.6.0 LANGUAGES CXX)
+project(usearch VERSION 0.6.0 LANGUAGES C CXX)
 
 # Determine if USearch is built as a subproject (using `add_subdirectory`) or if it is the main project
 set(USEARCH_IS_MAIN_PROJECT OFF)
@@ -114,6 +114,8 @@ endif()
 if(${USEARCH_BUILD_TEST} OR ${USEARCH_BUILD_BENCHMARK})
     add_subdirectory(cpp)
 endif()
+
+add_subdirectory(c)
 
 if(${USEARCH_BUILD_WOLFRAM})
     add_subdirectory(wolfram)
