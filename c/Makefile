@@ -24,7 +24,14 @@ build:
 	$(AR) -rcv libusearch.a lib.o
 
 debug:
-	$(CXX) $(OPTS) $(C_CXX_DEBUG_FLAGS) $(CXX_FLAGS) -o libusearch.so -c lib.cpp $(HEADER_INCLUDES) -shared -fPIC
+	$(CXX) $(OPTS) $(C_CXX_DEBUG_FLAGS) $(CXX_FLAGS) -o lib.o -c lib.cpp $(HEADER_INCLUDES) -shared -fPIC
+	$(CXX) $(OPTS) $(C_CXX_DEBUG_FLAGS) $(CXX_FLAGS) -o libusearch.so lib.o $(HEADER_INCLUDES) -shared -fPIC
+# linker flags below
+# c: create archive
+# r: insert the files member... into archive (with replacement)
+# s: add an index to archive. speeds up linking
+# v: verbose
+	$(AR) -rcsv libusearch.a lib.o
 
 .PHONY: static
 static:
