@@ -9,9 +9,11 @@ if (POLICY CMP0077)
 endif ()
 
 option(USEARCH_USE_SIMSIMD "Use SimSIMD hardware-accelerated metrics" OFF)
+option(USEARCH_NO_MARCH_NATIVE "Skip -march-native flat in compilation" OFF)
 option(USEARCH_BUILD_LIBUSEARCH_STATIC "Build a static libusearch_c library" ON)
 option(USEARCH_BUILD_LIBUSEARCH_SHARED "Build a shated libusearch_c library " OFF)
 
+message(WARNING "nonative: ${USEARCH_NO_MARCH_NATIVE}")
 # Make "Release" by default
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
@@ -23,7 +25,9 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall -Wextra -Wno-conversion -Wno-unknown-pragmas")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+    if (NOT ${USEARCH_NO_MARCH_NATIVE})
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+    endif()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fmax-errors=1")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pedantic")
 
