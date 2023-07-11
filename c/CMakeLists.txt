@@ -13,7 +13,6 @@ option(USEARCH_NO_MARCH_NATIVE "Skip -march-native flat in compilation" OFF)
 option(USEARCH_BUILD_LIBUSEARCH_STATIC "Build a static libusearch_c library" ON)
 option(USEARCH_BUILD_LIBUSEARCH_SHARED "Build a shated libusearch_c library " OFF)
 
-message(WARNING "nonative: ${USEARCH_NO_MARCH_NATIVE}")
 # Make "Release" by default
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
