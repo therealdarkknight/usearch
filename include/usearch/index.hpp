@@ -2834,6 +2834,7 @@ class index_gt {
         state.max_level = max_level_;
         state.entry_idx = entry_id_;
         return result;
+    }
 };
 
 /**
