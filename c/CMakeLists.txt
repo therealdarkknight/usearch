@@ -13,6 +13,8 @@ option(USEARCH_LOOKUP_LABEL "Support containment and lookup queries over labels"
 option(USEARCH_NO_MARCH_NATIVE "Skip -march-native flat in compilation" OFF)
 option(USEARCH_BUILD_LIBUSEARCH_STATIC "Build a static libusearch_c library" ON)
 option(USEARCH_BUILD_LIBUSEARCH_SHARED "Build a shated libusearch_c library " OFF)
+option(USEARCH_BUILD_TEST "Build a test executable" ON)
+option(USEARCH_DEBUG_BUILD_ASAN "Build with address sanitizer" ON)
 
 # Make "Release" by default
 if(NOT CMAKE_BUILD_TYPE)
@@ -23,7 +25,9 @@ endif()
 # https://cmake.org/cmake/help/latest/variable/CMAKE_LANG_COMPILER_ID.html
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
+    if(${USEARCH_DEBUG_BUILD_ASAN})
+        set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
+    endif()
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall -Wextra -Wno-conversion -Wno-unknown-pragmas")
     if (NOT ${USEARCH_NO_MARCH_NATIVE})
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
@@ -33,7 +37,9 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
+    if(${USEARCH_DEBUG_BUILD_ASAN})
+        set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
+    endif()
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wfatal-errors")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pedantic")
 
@@ -74,6 +80,11 @@ if(${USEARCH_BUILD_LIBUSEARCH_STATIC} OR ${USEARCH_BUILD_LIBUSEARCH_SHARED})
 
     
     target_include_directories(usearch_c PRIVATE ${USEARCH_PUNNED_INCLUDE_DIRS})
+
+    if(${USEARCH_DEBUG_BUILD_ASAN})
+        # for asan in debug builds
+        target_link_libraries(usearch_c PRIVATE gcov)
+    endif()
 
     if(${USEARCH_USE_SIMSIMD})
         target_compile_definitions(usearch_c PRIVATE USEARCH_USE_SIMSIMD=1)
