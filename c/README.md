@@ -6,7 +6,7 @@ You can also build the c bindings from this folder by running:
 mkdir build
 cd build
 cmake -DUSEARCH_BUILD_STATIC=ON ..
-# cmake -DUSEARCH_BUILD_SHARED=ON .. 
+# cmake -DUSEARCH_BUILD_STATIC=OFF ..
 make
 ```
 
