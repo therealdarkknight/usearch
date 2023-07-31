@@ -69,18 +69,19 @@
 #endif
 
 // STL includes
-#include <algorithm> // `std::sort_heap`
-#include <atomic>    // `std::atomic`
-#include <bitset>    // `std::bitset`
-#include <climits>   // `CHAR_BIT`
-#include <cmath>     // `std::sqrt`
-#include <cstring>   // `std::memset`
-#include <iterator>  // `std::reverse_iterator`
-#include <mutex>     // `std::unique_lock` - replacement candidate
-#include <random>    // `std::default_random_engine` - replacement candidate
-#include <stdexcept> // `std::runtime_exception`
-#include <thread>    // `std::thread`
-#include <utility>   // `std::pair`
+#include <algorithm>  // `std::sort_heap`
+#include <atomic>     // `std::atomic`
+#include <bitset>     // `std::bitset`
+#include <climits>    // `CHAR_BIT`
+#include <cmath>      // `std::sqrt`
+#include <cstring>    // `std::memset`
+#include <functional> // `std::function`
+#include <iterator>   // `std::reverse_iterator`
+#include <mutex>      // `std::unique_lock` - replacement candidate
+#include <random>     // `std::default_random_engine` - replacement candidate
+#include <stdexcept>  // `std::runtime_exception`
+#include <thread>     // `std::thread`
+#include <utility>    // `std::pair`
 
 // Prefetching
 #if defined(USEARCH_DEFINED_GCC)
@@ -1209,6 +1210,12 @@ constexpr std::size_t default_allocator_entry_bytes() { return 64; }
 constexpr char const* default_magic() { return "usearch"; }
 
 /**
+ *  @brief  How much larger (number of neighbors per node) will
+ *          the base level be compared to other levels.
+ */
+constexpr std::size_t base_level_multiple() { return 2; }
+
+/**
  *  @brief  Configuration settings for the index construction.
  *          Includes the main `::connectivity` parameter (`M` in the paper)
  *          and two expansion factors - for construction and search.
@@ -1227,6 +1234,24 @@ struct index_config_t {
     /// to align to SIMD register size for higher performance with
     /// less split-loads.
     std::size_t vector_alignment = 1;
+};
+
+using neighbors_count_t = std::uint32_t;
+
+// todo:: I started regretting making this global. Maybe rethink it. it seems there is no other structure that is global
+// and used from the punned class
+struct precomputed_constants_t {
+    double inverse_log_connectivity{};
+    std::size_t connectivity_max_base{};
+    std::size_t neighbors_bytes{};
+    std::size_t neighbors_base_bytes{};
+    precomputed_constants_t() {}
+    precomputed_constants_t(index_config_t const& config) noexcept
+        : inverse_log_connectivity(1.0 / std::log(static_cast<double>(config.connectivity))),
+          connectivity_max_base(config.connectivity * base_level_multiple()),
+          neighbors_bytes(config.connectivity * sizeof(id_t) + sizeof(neighbors_count_t)),
+          // todo:: is it ok to use one init variable from another in this kind of initializers?
+          neighbors_base_bytes(connectivity_max_base * sizeof(id_t) + sizeof(neighbors_count_t)) {}
 };
 
 struct index_limits_t {
@@ -1376,6 +1401,11 @@ struct file_head_result_t {
     scalar_kind_t scalar_kind;
     size_t size;
     entry_idx_t entry_idx;
+
+    // Derived structural:
+    size_t connectivity_max_base;
+    size_t neighbors_bytes;
+    size_t neighbors_base_bytes;
 
     // Additional:
     size_t bytes_for_graphs;
@@ -1644,7 +1674,6 @@ class index_gt {
     using reverse_const_iterator = std::reverse_iterator<member_citerator_t>;
 
   private:
-    using neighbors_count_t = std::uint32_t;
     using dim_t = std::uint32_t;
     using level_t = std::int32_t;
 
@@ -1656,12 +1685,6 @@ class index_gt {
     using tape_allocator_traits_t = std::allocator_traits<tape_allocator_t>;
     static_assert(sizeof(typename tape_allocator_traits_t::value_type) == 1, //
                   "Tape allocator must allocate separate addressable bytes");
-
-    /**
-     *  @brief  How much larger (number of neighbors per node) will
-     *          the base level be compared to other levels.
-     */
-    static constexpr std::size_t base_level_multiple_() { return 2; }
 
     /**
      *  @brief  How many bytes of memory are needed to form the "head" of the node.
@@ -1789,6 +1812,14 @@ class index_gt {
     using nodes_allocator_t = typename allocator_traits_t::template rebind_alloc<node_t>;
     node_t* nodes_{};
     mutable visits_bitset_t nodes_mutexes_{};
+
+    // used to index into `nodes_` array
+    // the original node_with_id_ member function is still available as builtin_node_with_id_()
+    // todo:: uint32_t here should be id_t. change it once I figure out a way to enforce these in the c bindings
+    std::function<node_t(std::uint32_t)> node_with_id_ = [this](std::uint32_t idx) { return nodes_[idx]; };
+    std::function<node_t(std::uint32_t)> node_with_id_mut_ = [this](std::uint32_t idx) { return nodes_[idx]; };
+    bool custom_node_retriever_ = false;
+    bool debug_node_retriever_ = false;
 
     using contexts_allocator_t = typename allocator_traits_t::template rebind_alloc<context_t>;
     context_t* contexts_{};
@@ -1953,15 +1984,19 @@ class index_gt {
             return false;
 
         nodes_allocator_t node_allocator;
-        node_t* new_nodes = node_allocator.allocate(limits.members);
-        if (!new_nodes)
-            return false;
+        node_t* new_nodes = nullptr;
+        if (!custom_node_retriever_ || (custom_node_retriever_ && debug_node_retriever_)) {
+            new_nodes = node_allocator.allocate(limits.members);
+            if (!new_nodes)
+                return false;
+        }
 
         std::size_t limits_threads = limits.threads();
         contexts_allocator_t context_allocator;
         context_t* new_contexts = context_allocator.allocate(limits_threads);
         if (!new_contexts) {
-            node_allocator.deallocate(new_nodes, limits.members);
+            if (new_nodes)
+                node_allocator.deallocate(new_nodes, limits.members);
             return false;
         }
         for (std::size_t i = 0; i != limits_threads; ++i) {
@@ -1971,7 +2006,8 @@ class index_gt {
             if (!context.visits.resize(limits.members)) {
                 for (std::size_t j = 0; j != i; ++j)
                     context.visits.reset();
-                node_allocator.deallocate(new_nodes, limits.members);
+                if (new_nodes)
+                    node_allocator.deallocate(new_nodes, limits.members);
                 context_allocator.deallocate(new_contexts, limits_threads);
                 return false;
             }
@@ -1989,8 +2025,8 @@ class index_gt {
             old_context.visits.reset();
         }
 
-        // Move the nodes info, and deallocate previous buffers.
-        if (nodes_)
+        // Move the nodes info, and deallocate previous buffers when not using external storage.
+        if (new_nodes && nodes_)
             std::memcpy(new_nodes, nodes_, sizeof(node_t) * size()), node_allocator.deallocate(nodes_, limits_.members);
         if (contexts_)
             context_allocator.deallocate(contexts_, limits_.threads());
@@ -2011,7 +2047,7 @@ class index_gt {
         std::size_t bytes_per_node_base = node_head_bytes_() + pre.neighbors_base_bytes;
         std::size_t rounded_size = divide_round_up<64>(bytes_per_node_base) * 64;
         std::size_t added_connections = (rounded_size - bytes_per_node_base) / sizeof(id_t);
-        config.connectivity = config.connectivity + added_connections / base_level_multiple_();
+        config.connectivity = config.connectivity + added_connections / base_level_multiple();
         return config;
     }
 
@@ -2101,13 +2137,27 @@ class index_gt {
     };
 
     /**
+     *  @brief Generate a random level for a new externally stored vector. Thread-safe.
+     *
+     *  @param[in] config Configuration options for this specific operation.
+     * @return The level to use for the new vector add operation.
+     */
+    level_t choose_random_level(add_config_t config) {
+        context_t& context = contexts_[config.thread];
+        return choose_random_level_(context.level_generator);
+    }
+
+    /**
      *  @brief Inserts a new vector into the index. Thread-safe.
      *
      *  @param[in] label External identifier/name/descriptor for the vector.
      *  @param[in] vector Contiguous range of scalars forming a vector view.
      *  @param[in] config Configuration options for this specific operation.
+     *  @param[in] level The level to use for the new vector add operation (external storage only).
+     *  @param[in] tape The tape to use for the new vector add operation (external storage only).
      */
-    add_result_t add(label_t label, vector_view_t vector, add_config_t config = {}) usearch_noexcept_m {
+    add_result_t add(label_t label, vector_view_t vector, add_config_t config = {}, level_t level = -1,
+                     byte_t* tape = nullptr) usearch_noexcept_m {
 
         usearch_assert_m(!is_immutable(), "Can't add to an immutable index");
         add_result_t result;
@@ -2121,7 +2171,7 @@ class index_gt {
 
         // The top list needs one more slot than the connectivity of the base level
         // for the heuristic, that tries to squeeze one more element into saturated list.
-        std::size_t top_limit = (std::max)(base_level_multiple_() * config_.connectivity + 1, config.expansion);
+        std::size_t top_limit = (std::max)(base_level_multiple() * config_.connectivity + 1, config.expansion);
         if (!top.reserve(top_limit))
             return result.failed("Out of memory!");
         if (!next.reserve(config.expansion))
@@ -2131,17 +2181,30 @@ class index_gt {
         std::unique_lock<std::mutex> new_level_lock(global_mutex_);
         level_t max_level_copy = max_level_; // Copy under lock
         id_t entry_id_copy = entry_id_;      // Copy under lock
-        level_t target_level = choose_random_level_(context.level_generator);
+        usearch_assert_m(custom_node_retriever_ ^ (level == -1 && tape == nullptr),
+                         "Must generate and specify level&tape iff nodes are externally stored");
+        level_t target_level = level != -1 ? level : choose_random_level_(context.level_generator);
         if (target_level <= max_level_copy)
             new_level_lock.unlock();
 
-        // Allocate the neighbors
-        node_t node = node_make_(label, vector, target_level, config.store_vector);
-        if (!node)
-            return result.failed("Out of memory!");
+        // Allocate and initialize node tape (config, the neighbors and optionally the vector)
+        node_t node;
+        if (!custom_node_retriever_) {
+            node = node_malloc_(label, vector, target_level, config.store_vector);
+            if (!node)
+                return result.failed("Out of memory!");
+        } else {
+            node = node_init_(tape, label, vector, target_level, config.store_vector);
+            if (!node)
+                return result.failed("Node init failed. Bad tape?");
+        }
         std::size_t old_size = size_.fetch_add(1);
         id_t new_id = static_cast<id_t>(old_size);
         nodes_[old_size] = node;
+        if (!custom_node_retriever_) {
+            // node internally stored. save the node we just allocated
+            nodes_[old_size] = node;
+        }
         result.new_size = old_size + 1;
         result.id = new_id;
         node_lock_t new_lock = node_lock_(old_size);
@@ -2157,6 +2220,12 @@ class index_gt {
         result.measurements = context.measurements_count;
         result.cycles = context.iteration_cycles;
 
+        // todo:: a tirect rebase would pass node as well as ndoe_id
+        //  since my version passes ndoe object directly. But ihave since changed
+        //  external index structure such that this should work
+        //  if it does not work, first go to the version of my usearch where
+        //  rest of lantern works and change this one bit to the approach here,
+        //  get it working and come back
         connect_node_across_levels_(new_id, vector, entry_id_copy, max_level_copy, target_level, config, context);
 
         // Normalize stats
@@ -2165,6 +2234,8 @@ class index_gt {
 
         // Updating the entry point if needed
         if (target_level > max_level_copy) {
+            usearch_assert_m(new_level_lock.owns_lock(), "Must hold the new level lock when changing max level");
+
             entry_id_ = new_id;
             max_level_ = target_level;
         }
@@ -2193,7 +2264,7 @@ class index_gt {
 
         // The top list needs one more slot than the connectivity of the base level
         // for the heuristic, that tries to squeeze one more element into saturated list.
-        std::size_t top_limit = (std::max)(base_level_multiple_() * config_.connectivity + 1, config.expansion);
+        std::size_t top_limit = (std::max)(base_level_multiple() * config_.connectivity + 1, config.expansion);
         if (!top.reserve(top_limit))
             return result.failed("Out of memory!");
         if (!next.reserve(config.expansion))
@@ -2284,7 +2355,7 @@ class index_gt {
         result.nodes = size();
         for (std::size_t i = 0; i != result.nodes; ++i) {
             node_t node = node_with_id_(i);
-            std::size_t max_edges = node.level() * config_.connectivity + base_level_multiple_() * config_.connectivity;
+            std::size_t max_edges = node.level() * config_.connectivity + base_level_multiple() * config_.connectivity;
             std::size_t edges = 0;
             for (level_t level = 0; level <= node.level(); ++level)
                 edges += neighbors_(node, level).size();
@@ -2310,7 +2381,7 @@ class index_gt {
             result.allocated_bytes += node_head_bytes_() + node_vector_bytes_(node) + neighbors_bytes;
         }
 
-        std::size_t max_edges_per_node = level ? config_.connectivity : base_level_multiple_() * config_.connectivity;
+        std::size_t max_edges_per_node = level ? config_.connectivity : base_level_multiple() * config_.connectivity;
         result.max_edges = result.nodes * max_edges_per_node;
         return result;
     }
@@ -2467,6 +2538,8 @@ class index_gt {
         };
 
         // Read the header
+        // todo:: delete this and outsource the functionality to load_index_header()
+        // remember to close the file from outside since load_index_header will not do that
         {
             read_chunk(&state_buffer[0], sizeof(file_header_t));
             if (result.error)
@@ -2527,6 +2600,58 @@ class index_gt {
 
         std::fclose(file);
         reset_view_();
+        return {};
+    }
+
+    serialization_result_t view_mem_lazy(byte_t* file) noexcept {
+        serialization_result_t result;
+        result = load_index_header(file);
+        if (result.error) {
+            // q:: this generates a warning "moving a local object in a return statement prevents copy elision"
+            //  but if I do not move, it seems result is actually copied and the restructor of this function's copy
+            //  raises when ~error_t is called.
+            //  what is the right approach to make sure result is moved/constructed at destination?
+            //  I read that return std::move is bad practice so probably this is not the right approach
+            return std::move(result);
+        }
+
+        if (!custom_node_retriever_)
+            return result.failed("custom node retriever must be set for lazy index loading");
+#ifdef DEBUG_RETRIEVER
+        return result.failed("for retriever debugging you must eagerly load the index into usearch with view_mem");
+#endif
+        return std::move(result);
+    }
+
+    serialization_result_t update_header(byte_t* headerp) noexcept {
+        serialization_result_t result;
+        result = save_index_header(headerp);
+        return std::move(result);
+    }
+
+    serialization_result_t view_mem(byte_t* file, progress_at&& progress = {}) noexcept {
+        serialization_result_t result;
+        // Parse and load the header
+        result = load_index_header(file);
+        if (result.error) {
+            return result;
+        }
+
+        // Locate every node packed into file
+        std::size_t progress_bytes = sizeof(file_header_t);
+        std::size_t const size = size_;
+        for (std::size_t i = 0; i != size; ++i) {
+            byte_t* tape = (byte_t*)(file + progress_bytes);
+            dim_t dim = misaligned_load<dim_t>(tape + sizeof(label_t));
+            level_t level = misaligned_load<level_t>(tape + sizeof(label_t) + sizeof(dim_t));
+
+            std::size_t node_bytes = node_bytes_(dim, level);
+            std::size_t node_vector_bytes = dim * sizeof(scalar_t);
+            nodes_[i] = node_t{tape, (scalar_t*)(tape + node_bytes - node_vector_bytes)};
+            progress_bytes += node_bytes;
+            progress(i, size);
+        }
+
         return {};
     }
 
@@ -2595,51 +2720,62 @@ class index_gt {
         viewed_file_.length = file_stat.st_size;
 #endif // Platform specific code
 
-        // Read the header
-        {
-            file_head_t state{file};
-            if (state.bytes_per_label != sizeof(label_t)) {
-                reset_view_();
-                return result.failed("Incompatible label type!");
-            }
-            if (state.bytes_per_id != sizeof(id_t)) {
-                reset_view_();
-                return result.failed("Incompatible ID type!");
-            }
+        return view_mem(file);
+    }
 
-            config_.connectivity = state.connectivity;
-            config_.vector_alignment = state.vector_alignment;
-            pre_ = precompute_(config_);
+#pragma endregion
 
-            index_limits_t limits;
-            limits.members = state.size;
-            limits.threads_add = 0;
-            if (!reserve(limits))
-                return result.failed("Out of memory!");
+#pragma region External Index
+    // todo:: why is this here?
+    using node_retriever_t = void* (*)(int index);
+    void set_node_retriever(node_retriever_t external_node_retriever,
+                            node_retriever_t external_node_retriever_mut) noexcept {
+        custom_node_retriever_ = true;
+#ifdef DEBUG_RETRIEVER
+        debug_node_retriever_ = true;
+#endif
 
-            size_ = state.size;
-            max_level_ = static_cast<level_t>(state.max_level);
-            entry_id_ = static_cast<id_t>(state.entry_idx);
-        }
-
-        // Locate every node packed into file
-        std::size_t progress_bytes = sizeof(file_header_t);
-        std::size_t const size = size_;
-        for (std::size_t i = 0; i != size; ++i) {
-            byte_t* tape = (byte_t*)(file + progress_bytes);
+        node_with_id_ = [this, external_node_retriever](size_t index) {
+            byte_t* tape = (byte_t*)external_node_retriever(index);
             dim_t dim = misaligned_load<dim_t>(tape + sizeof(label_t));
             level_t level = misaligned_load<level_t>(tape + sizeof(label_t) + sizeof(dim_t));
 
             std::size_t node_bytes = node_bytes_(dim, level);
             std::size_t node_vector_bytes = dim * sizeof(scalar_t);
-            nodes_[i] = node_t{tape, (scalar_t*)(tape + node_bytes - node_vector_bytes)};
-            progress_bytes += node_bytes;
-            progress(i, size);
-        }
 
-        return {};
+            node_t node = node_t{tape, (scalar_t*)(tape + node_bytes - node_vector_bytes)};
+#ifdef DEBUG_RETRIEVER
+            node_t correct_node = builtin_node_with_id_(index);
+            if (correct_node.tape() != node.tape()) {
+                std::cerr << "node retriever is incorrect. expected tape at addr " << (const void*)correct_node.tape()
+                          << "but got " << (const void*)node.tape() << std::endl;
+                throw std::runtime_error("node retriever is incorrect");
+            }
+#endif
+            return node;
+        };
+        node_with_id_mut_ = [this, external_node_retriever_mut](size_t index) {
+            byte_t* tape = (byte_t*)external_node_retriever_mut(index);
+            dim_t dim = misaligned_load<dim_t>(tape + sizeof(label_t));
+            level_t level = misaligned_load<level_t>(tape + sizeof(label_t) + sizeof(dim_t));
+
+            std::size_t node_bytes = node_bytes_(dim, level);
+            std::size_t node_vector_bytes = dim * sizeof(scalar_t);
+
+            node_t node = node_t{tape, (scalar_t*)(tape + node_bytes - node_vector_bytes)};
+#ifdef DEBUG_RETRIEVER
+            node_t correct_node = builtin_node_with_id_(index);
+            if (correct_node.tape() != node.tape()) {
+                std::cerr << "node retriever is incorrect. expected tape at addr " << (const void*)correct_node.tape()
+                          << "but got " << (const void*)node.tape() << std::endl;
+                throw std::runtime_error("node retriever is incorrect");
+            }
+#endif
+            return node;
+        };
     }
 
+    precomputed_constants_t metadata() { return pre_; }
 #pragma endregion
 
     struct join_result_t {
@@ -2920,7 +3056,7 @@ class index_gt {
 
     inline static precomputed_constants_t precompute_(index_config_t const& config) noexcept {
         precomputed_constants_t pre;
-        pre.connectivity_max_base = config.connectivity * base_level_multiple_();
+        pre.connectivity_max_base = config.connectivity * base_level_multiple();
         pre.inverse_log_connectivity = 1.0 / std::log(static_cast<double>(config.connectivity));
         pre.neighbors_bytes = config.connectivity * sizeof(id_t) + sizeof(neighbors_count_t);
         pre.neighbors_base_bytes = pre.connectivity_max_base * sizeof(id_t) + sizeof(neighbors_count_t);
@@ -2961,6 +3097,7 @@ class index_gt {
         std::size_t non_vector_bytes = node_bytes - vector_bytes;
 
         byte_t* data = (byte_t*)tape_allocator_.allocate(node_bytes);
+        // q:: what does this !data case mean/do?
         if (!data)
             return node_bytes_split_t{};
         return {{data, non_vector_bytes}, {data + non_vector_bytes, vector_bytes}};
@@ -2980,6 +3117,8 @@ class index_gt {
         node.level(level);
         return node;
     }
+    // todo:: implement meeee
+    node_t node_init_(){};
 
     node_t node_make_copy_(node_bytes_split_t old_bytes) noexcept {
         if (old_bytes.colocated()) {
@@ -2999,14 +3138,22 @@ class index_gt {
 
         if (viewed_file_)
             return;
+        // for view_mem and view_mem_lazy where file is provided by the caller so there are no nodes
+        // managed by us to free
+        if (!nodes_)
+            return;
 
+        // DO NOT COMMIT. COULD HAVE BEEN FIXED ALREADY. CHECK FIRST!
+        //  index_punned_dense uses memory_mapping_allocator_gt which is allocate-many free once allocator
+        //  so the first call to deallocate deallocates everything!
+        //  todo:: remove index->index_punned dependency
         node_t& node = nodes_[id];
         std::size_t node_bytes = node_bytes_(node) - node_vector_bytes_(node) * !node_bytes_split_(node).colocated();
         tape_allocator_.deallocate(node.tape(), node_bytes);
         node = node_t{};
     }
 
-    inline node_t node_with_id_(std::size_t idx) const noexcept { return nodes_[idx]; }
+    inline node_t builtin_node_with_id_(std::size_t idx) const noexcept { return nodes_[idx]; }
     inline neighbors_ref_t neighbors_base_(node_t node) const noexcept { return {node.neighbors_tape()}; }
 
     inline neighbors_ref_t neighbors_non_base_(node_t node, level_t level) const noexcept {
@@ -3047,6 +3194,7 @@ class index_gt {
         }
     }
 
+    // todo:: the other overload boldy not added here....
     id_t connect_new_node_(id_t new_id, level_t level, context_t& context) usearch_noexcept_m {
 
         node_t new_node = node_with_id_(new_id);
@@ -3077,10 +3225,14 @@ class index_gt {
         // Reverse links from the neighbors:
         std::size_t const connectivity_max = level ? config_.connectivity : pre_.connectivity_max_base;
         for (id_t close_id : new_neighbors) {
-            node_t close_node = node_with_id_(close_id);
-            node_lock_t close_lock = node_lock_(close_id);
+            node_t close_node = node_with_id_mut_(close_id);
+            node_lock_t close_lock = node_lock_(close_id); //--<< remove on external inserts todo::
 
-            neighbors_ref_t close_header = neighbors_(close_node, level);
+            neighbors_ref_t close_header = neighbors_(close_node, level); // <-- n.b.
+            // ^^^^ N.B.: todo:: node_with_id_mut_ must be modified to make sure that when I modify node_1,
+            // and node_1's neighbor's neighbor is node_1, when I arrive back to node1 with this neighbor chain
+            // I see the modified version and not the committed version
+            // ^^ this is done!
             usearch_assert_m(close_header.size() <= connectivity_max, "Possible corruption");
             usearch_assert_m(close_id != new_id, "Self-loops are impossible");
             usearch_assert_m(level <= close_node.level(), "Linking to missing level");
@@ -3095,10 +3247,14 @@ class index_gt {
             // To fit a new connection we need to drop an existing one.
             top.clear();
             usearch_assert_m((top.reserve(close_header.size() + 1)), "The memory must have been reserved in `add`");
+            // insert the newly added node to the competition for neighbors of close_node
             top.insert_reserved({context.measure(new_node, close_node), new_id});
+            // add the existing neighbors of close_node to the competition
             for (id_t successor_id : close_header)
                 top.insert_reserved({context.measure(node_with_id_(successor_id), close_node), successor_id});
+            // ^^ another bold bove here ... skipped node_with_id_ instrumentation
 
+            // select the closest ones and update close_node neighbors. No other node is changed from here on
             // Export the results:
             close_header.clear();
             candidates_view_t top_view = refine_(top, connectivity_max, context);
@@ -3319,6 +3475,61 @@ class index_gt {
         top.shrink(submitted_count);
         return {top_data, submitted_count};
     }
+
+    serialization_result_t load_index_header(byte_t* file) {
+        serialization_result_t result;
+        file_head_t state{file};
+        if (state.bytes_per_label != sizeof(label_t)) {
+            reset_view_();
+            return result.failed("Incompatible label type!");
+        }
+        if (state.bytes_per_id != sizeof(id_t)) {
+            reset_view_();
+            return result.failed("Incompatible ID type!");
+        }
+        if (std::strncmp(state.magic, default_magic(), std::strlen(default_magic())) != 0)
+            return result.failed("Wrong MIME type!");
+
+        config_.connectivity = state.connectivity;
+        config_.vector_alignment = state.vector_alignment;
+        pre_ = precomputed_constants_t(config_);
+
+        index_limits_t limits;
+        limits.members = state.size;
+        limits.threads_add = 0;
+        if (!reserve(limits))
+            return result.failed("Out of memory!");
+
+        size_ = state.size;
+        max_level_ = static_cast<level_t>(state.max_level);
+        entry_id_ = static_cast<id_t>(state.entry_idx);
+        return result;
+    }
+
+    serialization_result_t save_index_header(byte_t* headerp) {
+        // todo:: make sure that the index is not in use or is properly locked
+        // when generating the header
+        serialization_result_t result;
+        file_head_t state{headerp};
+        if (state.bytes_per_label != sizeof(label_t)) {
+            reset_view_();
+            return result.failed("Incompatible label type!");
+        }
+        if (state.bytes_per_id != sizeof(id_t)) {
+            reset_view_();
+            return result.failed("Incompatible ID type!");
+        }
+        if (std::strncmp(state.magic, default_magic(), std::strlen(default_magic())) != 0)
+            return result.failed("Wrong MIME type!");
+
+        state.connectivity = config_.connectivity;
+        state.vector_alignment = config_.vector_alignment;
+
+        state.size = size_;
+        state.max_level = max_level_;
+        state.entry_idx = entry_id_;
+        return result;
+    }
 };
 
 /**
@@ -3344,6 +3555,12 @@ inline file_head_result_t index_metadata(char const* file_path) noexcept {
     if (std::strncmp(state.magic, default_magic(), std::strlen(default_magic())) != 0)
         return result.failed("Wrong MIME type!");
 
+    // add precomputed constants to the resulting metadata
+    index_config_t config;
+    config.connectivity = state.connectivity;
+    config.vector_alignment = state.vector_alignment;
+    precomputed_constants_t pre = precomputed_constants_t(config);
+
     result.version_major = state.version_major;
     result.version_minor = state.version_minor;
     result.version_patch = state.version_patch;
@@ -3359,6 +3576,10 @@ inline file_head_result_t index_metadata(char const* file_path) noexcept {
     result.bytes_for_graphs = state.bytes_for_graphs;
     result.bytes_for_vectors = state.bytes_for_vectors;
     result.bytes_checksum = state.bytes_checksum;
+
+    result.connectivity_max_base = pre.connectivity_max_base;
+    result.neighbors_base_bytes = pre.neighbors_base_bytes;
+    result.neighbors_bytes = pre.neighbors_bytes;
     return result;
 }
 
