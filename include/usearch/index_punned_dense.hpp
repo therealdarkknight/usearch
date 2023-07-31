@@ -458,7 +458,7 @@ class index_punned_dense_gt {
     serialization_result_t view_mem_lazy(char* memory) {
         serialization_result_t result;
 #if USEARCH_LOOKUP_LABEL
-        result.failed("Usearch does not support label lookup and removals for external memory indexes.");
+        return result.failed("Usearch does not support label lookup and member removals for external memory indexes.");
 #endif
         result = typed_->view_mem_lazy(memory);
         return std::move(result);

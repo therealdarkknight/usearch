@@ -52,7 +52,7 @@ scalar_kind_t to_native_scalar(usearch_scalar_kind_t kind) {
 add_result_t add_(index_t* index, usearch_label_t label, void const* vector, scalar_kind_t kind, int32_t level,
                   void* tape) {
     switch (kind) {
-    case scalar_kind_t::f32_k: return index->add(label, (f32_t const*)vector);
+    case scalar_kind_t::f32_k: return index->add(label, (f32_t const*)vector, level, (byte_t*)tape);
     case scalar_kind_t::f64_k: return index->add(label, (f64_t const*)vector);
     case scalar_kind_t::f16_k: return index->add(label, (f16_t const*)vector);
     case scalar_kind_t::f8_k: return index->add(label, (f8_bits_t const*)vector);

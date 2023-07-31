@@ -1693,12 +1693,6 @@ class index_gt {
 
     using visits_bitset_t = visits_bitset_gt<dynamic_allocator_t>;
 
-    struct precomputed_constants_t {
-        double inverse_log_connectivity{};
-        std::size_t connectivity_max_base{};
-        std::size_t neighbors_bytes{};
-        std::size_t neighbors_base_bytes{};
-    };
     struct candidate_t {
         distance_t distance;
         id_t id;
@@ -2190,17 +2184,17 @@ class index_gt {
         // Allocate and initialize node tape (config, the neighbors and optionally the vector)
         node_t node;
         if (!custom_node_retriever_) {
-            node = node_malloc_(label, vector, target_level, config.store_vector);
+            node = node_make_(label, vector, target_level, config.store_vector);
             if (!node)
                 return result.failed("Out of memory!");
         } else {
-            node = node_init_(tape, label, vector, target_level, config.store_vector);
+            node_bytes_split_t node_bytes = node_view_(tape, vector.size() * config.store_vector, target_level);
+            node = node_init_(node_bytes, label, vector, target_level, config.store_vector);
             if (!node)
                 return result.failed("Node init failed. Bad tape?");
         }
         std::size_t old_size = size_.fetch_add(1);
         id_t new_id = static_cast<id_t>(old_size);
-        nodes_[old_size] = node;
         if (!custom_node_retriever_) {
             // node internally stored. save the node we just allocated
             nodes_[old_size] = node;
@@ -2483,6 +2477,7 @@ class index_gt {
             std::size_t written = std::fwrite(begin, length, 1, file);
             if (!written) {
                 std::fclose(file);
+                //q:: does this work? doesn't failed() return a temporary which is immediately dropped?
                 result.failed(std::strerror(errno));
             }
         };
@@ -2533,6 +2528,7 @@ class index_gt {
             std::size_t read = std::fread(begin, length, 1, file);
             if (!read) {
                 std::fclose(file);
+                //q:: does this work? doesn't failed() return a temporary which is immediately dropped?
                 result.failed(std::strerror(errno));
             }
         };
@@ -2629,7 +2625,7 @@ class index_gt {
         return std::move(result);
     }
 
-    serialization_result_t view_mem(byte_t* file, progress_at&& progress = {}) noexcept {
+    serialization_result_t view_mem(byte_t* file) noexcept {
         serialization_result_t result;
         // Parse and load the header
         result = load_index_header(file);
@@ -2649,7 +2645,7 @@ class index_gt {
             std::size_t node_vector_bytes = dim * sizeof(scalar_t);
             nodes_[i] = node_t{tape, (scalar_t*)(tape + node_bytes - node_vector_bytes)};
             progress_bytes += node_bytes;
-            progress(i, size);
+            // progress(i, size);
         }
 
         return {};
@@ -3091,34 +3087,45 @@ class index_gt {
     inline std::size_t node_vector_bytes_(node_t node) const noexcept { return node_vector_bytes_(node.dim()); }
 
     node_bytes_split_t node_malloc_(dim_t dims_to_store, level_t level) noexcept {
-
-        std::size_t vector_bytes = node_vector_bytes_(dims_to_store);
         std::size_t node_bytes = node_bytes_(dims_to_store, level);
-        std::size_t non_vector_bytes = node_bytes - vector_bytes;
-
         byte_t* data = (byte_t*)tape_allocator_.allocate(node_bytes);
         // q:: what does this !data case mean/do?
         if (!data)
             return node_bytes_split_t{};
+        return node_view_(data, dims_to_store, level);
+    }
+
+    // if vector is stored external to this view, it is caller's responsibility to initialize
+    // node_butes_split_t.vector{} before contstructing a node{} on this
+    node_bytes_split_t node_view_(byte_t* data, dim_t dims_stored, level_t level) noexcept {
+        std::size_t vector_bytes = node_vector_bytes_(dims_stored);
+        std::size_t node_bytes = node_bytes_(dims_stored, level);
+        std::size_t non_vector_bytes = node_bytes - vector_bytes;
+
         return {{data, non_vector_bytes}, {data + non_vector_bytes, vector_bytes}};
     }
 
     node_t node_make_(label_t label, vector_view_t vector, level_t level, bool store_vector) noexcept {
         node_bytes_split_t node_bytes = node_malloc_(vector.size() * store_vector, level);
+        return node_init_(node_bytes, label, vector, level, store_vector);
+    }
+
+    node_t node_init_(node_bytes_split_t node_bytes, label_t label, vector_view_t vector, level_t level,
+                      bool store_vector) {
         if (store_vector) {
             std::memset(node_bytes.tape.data(), 0, node_bytes.tape.size());
             std::memcpy(node_bytes.vector.data(), vector.data(), node_bytes.vector.size());
         } else {
             std::memset(node_bytes.tape.data(), 0, node_bytes.memory_usage());
+            // q:: bugfix??
+            // node_bytes.vector = node_bytes_split_t{vector.data(), vector.size() * sizeof(scalar_t)};
         }
         node_t node = node_bytes;
         node.label(label);
         node.dim(static_cast<dim_t>(vector.size()));
         node.level(level);
         return node;
-    }
-    // todo:: implement meeee
-    node_t node_init_(){};
+    };
 
     node_t node_make_copy_(node_bytes_split_t old_bytes) noexcept {
         if (old_bytes.colocated()) {
