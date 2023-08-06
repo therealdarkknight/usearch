@@ -325,5 +325,4 @@ USEARCH_EXPORT void usearch_cast(usearch_scalar_kind_t from, void const* vector,
     default: *error = "Unsupported \"from\" scalar kind."; return;
     }
 }
-// USEARCH_EXPORT usearch_cast_f8_f32();
 }
