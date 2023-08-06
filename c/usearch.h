@@ -80,7 +80,7 @@ USEARCH_EXPORT size_t usearch_connectivity(usearch_index_t, usearch_error_t*);
 
 USEARCH_EXPORT void usearch_reserve(usearch_index_t, size_t capacity, usearch_error_t*);
 
-USEARCH_EXPORT void usearch_add(                                                                     //
+USEARCH_EXPORT void usearch_add(                                                             //
     usearch_index_t, usearch_label_t, void const* vector, usearch_scalar_kind_t vector_kind, //
     usearch_error_t*);
 
@@ -90,11 +90,11 @@ USEARCH_EXPORT bool usearch_contains(usearch_index_t, usearch_label_t, usearch_e
  *  @brief      Performs k-Approximate Nearest Neighbors Search.
  *  @return     Number of found matches.
  */
-USEARCH_EXPORT size_t usearch_search(                                                                          //
+USEARCH_EXPORT size_t usearch_search(                                                                  //
     usearch_index_t, void const* query_vector, usearch_scalar_kind_t query_kind, size_t results_limit, //
     usearch_label_t* found_labels, usearch_distance_t* found_distances, usearch_error_t*);
 
-USEARCH_EXPORT bool usearch_get(              //
+USEARCH_EXPORT bool usearch_get(      //
     usearch_index_t, usearch_label_t, //
     void* vector, usearch_scalar_kind_t vector_kind, usearch_error_t*);
 
@@ -103,10 +103,13 @@ USEARCH_EXPORT void usearch_remove(usearch_index_t, usearch_label_t, usearch_err
 USEARCH_EXPORT int32_t usearch_newnode_level(usearch_index_t index, usearch_error_t* error);
 
 USEARCH_EXPORT void usearch_set_node_retriever(usearch_index_t index, usearch_node_retriever_t retriever,
-                                usearch_node_retriever_t retriever_mut, usearch_error_t* error);
-USEARCH_EXPORT void usearch_add_external(                                                                                    //
+                                               usearch_node_retriever_t retriever_mut, usearch_error_t* error);
+USEARCH_EXPORT void usearch_add_external(                                                                     //
     usearch_index_t index, usearch_label_t label, void const* vector, void* tape, usearch_scalar_kind_t kind, //
     int32_t level, usearch_error_t* error);
+
+USEARCH_EXPORT void usearch_cast(usearch_scalar_kind_t from, void const* vector, usearch_scalar_kind_t to, void* result,
+                                 size_t result_size, int dims, usearch_error_t* error);
 
 #ifdef __cplusplus
 }

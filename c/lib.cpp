@@ -2,6 +2,7 @@
 #include <functional>
 
 #include <usearch/index_punned_dense.hpp>
+#include <usearch/index_punned_helpers.hpp>
 
 #ifndef USEARCH_EXPORT
 #define USEARCH_EXPORT
@@ -248,4 +249,81 @@ USEARCH_EXPORT void usearch_remove(usearch_index_t, usearch_label_t, usearch_err
     if (error != nullptr)
         *error = "USearch does not support removal of elements yet.";
 }
+
+/** Cast types
+ */
+USEARCH_EXPORT void usearch_cast(usearch_scalar_kind_t from, void const* vector, usearch_scalar_kind_t to, void* result,
+                                 size_t result_size, int dims, usearch_error_t* error) {
+
+    scalar_kind_t from_native = to_native_scalar(from);
+    scalar_kind_t to_native = to_native_scalar(to);
+    if (from_native == scalar_kind_t::unknown_k) {
+        *error = "Unknown \"from\" scalar kind.";
+        return;
+    }
+    if (to_native == scalar_kind_t::unknown_k) {
+        *error = "Unknown \"to\" scalar kind.";
+        return;
+    }
+
+    if (result_size < dims * bytes_per_scalar(to_native_scalar(to))) {
+        *error = "Result buffer is too small.";
+        return;
+    }
+
+    switch (from_native) {
+    case scalar_kind_t::f64_k:
+        switch (to_native) {
+        case scalar_kind_t::f64_k: cast_gt<f64_t, f64_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f32_k: cast_gt<f64_t, f32_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f16_k: cast_gt<f64_t, f16_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::b1x8_k: cast_gt<f64_t, b1x8_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f8_k: cast_gt<f64_t, f8_bits_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        default: *error = "Unsupported \"to\" scalar kind."; return;
+        }
+        break;
+    case scalar_kind_t::f32_k:
+        switch (to_native) {
+        case scalar_kind_t::f64_k: cast_gt<f32_t, f64_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f32_k: cast_gt<f32_t, f32_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f16_k: cast_gt<f32_t, f16_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::b1x8_k: cast_gt<f32_t, b1x8_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f8_k: cast_gt<f32_t, f8_bits_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        default: *error = "Unsupported \"to\" scalar kind."; return;
+        }
+        break;
+    case scalar_kind_t::f16_k:
+        switch (to_native) {
+        case scalar_kind_t::f64_k: cast_gt<f16_t, f64_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f32_k: cast_gt<f16_t, f32_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f16_k: cast_gt<f16_t, f16_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::b1x8_k: cast_gt<f16_t, b1x8_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f8_k: cast_gt<f16_t, f8_bits_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        default: *error = "Unsupported \"to\" scalar kind."; return;
+        }
+        break;
+    case scalar_kind_t::b1x8_k:
+        switch (to_native) {
+        case scalar_kind_t::f64_k: cast_gt<b1x8_t, f64_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f32_k: cast_gt<b1x8_t, f32_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f16_k: cast_gt<b1x8_t, f16_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::b1x8_k: cast_gt<b1x8_t, b1x8_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f8_k: cast_gt<b1x8_t, f8_bits_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        default: *error = "Unsupported \"to\" scalar kind."; return;
+        }
+        break;
+    case scalar_kind_t::f8_k:
+        switch (to_native) {
+        case scalar_kind_t::f64_k: cast_gt<f8_bits_t, f64_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f32_k: cast_gt<f8_bits_t, f32_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f16_k: cast_gt<f8_bits_t, f16_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::b1x8_k: cast_gt<f8_bits_t, b1x8_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        case scalar_kind_t::f8_k: cast_gt<f8_bits_t, f8_bits_t>{}((const byte_t*)vector, dims, (byte_t*)result); break;
+        default: *error = "Unsupported \"to\" scalar kind."; return;
+        }
+        break;
+    default: *error = "Unsupported \"from\" scalar kind."; return;
+    }
+}
+// USEARCH_EXPORT usearch_cast_f8_f32();
 }
