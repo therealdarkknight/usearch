@@ -3210,7 +3210,7 @@ class index_gt {
 
     id_t connect_new_node_(id_t new_id, level_t level, context_t& context) usearch_noexcept_m {
 
-        node_t new_node = node_with_id_(new_id);
+        node_t new_node = node_with_id_mut_(new_id);
         top_candidates_t& top = context.top_candidates;
 
         // Outgoing links from `new_id`:
