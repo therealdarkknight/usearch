@@ -16,8 +16,12 @@ using namespace unum::usearch;
 using namespace unum;
 
 using label_t = usearch_label_t;
+// postgres index tid is used as id type. index tid is sizeof(BlockNumber) + sizeof(offsetNumber) = 32 + 16 = 48 bits
+// uint64_t is enough to hold it.
+// this is called id_type because calling it id_t causes some kind of conflict
+using id_type = std::uint64_t;
 using distance_t = usearch_distance_t;
-using index_t = index_punned_dense_gt<label_t>;
+using index_t = index_punned_dense_gt<label_t, id_type>;
 using add_result_t = index_t::add_result_t;
 using search_result_t = index_t::search_result_t;
 using serialization_result_t = index_t::serialization_result_t;
@@ -51,9 +55,9 @@ scalar_kind_t to_native_scalar(usearch_scalar_kind_t kind) {
 }
 
 add_result_t add_(index_t* index, usearch_label_t label, void const* vector, scalar_kind_t kind, int32_t level,
-                  void* tape) {
+                  void* tape, void const* index_tid= nullptr) {
     switch (kind) {
-    case scalar_kind_t::f32_k: return index->add(label, (f32_t const*)vector, level, (byte_t*)tape);
+    case scalar_kind_t::f32_k: return index->add(label, (f32_t const*)vector, level, (byte_t*)tape, (byte_t*)index_tid);
     case scalar_kind_t::f64_k: return index->add(label, (f64_t const*)vector);
     case scalar_kind_t::f16_k: return index->add(label, (f16_t const*)vector);
     case scalar_kind_t::f8_k: return index->add(label, (f8_bits_t const*)vector);
@@ -213,10 +217,11 @@ int32_t usearch_newnode_level(usearch_index_t index, usearch_error_t*) {
     return reinterpret_cast<index_t*>(index)->newnode_level();
 }
 
-void usearch_add_external(                                                                                    //
-    usearch_index_t index, usearch_label_t label, void const* vector, void* tape, usearch_scalar_kind_t kind, //
+void usearch_add_external( //
+    usearch_index_t index, usearch_label_t label, void const* vector, void* tape, void const* index_tid,
+    usearch_scalar_kind_t kind, //
     int32_t level, usearch_error_t* error) {
-    add_result_t result = add_(reinterpret_cast<index_t*>(index), label, vector, to_native_scalar(kind), level, tape);
+    add_result_t result = add_(reinterpret_cast<index_t*>(index), label, vector, to_native_scalar(kind), level, tape, index_tid);
     if (!result)
         *error = result.error.what();
 }

@@ -352,7 +352,7 @@ class index_punned_dense_gt {
     add_result_t add(label_t label, b1x8_t const* vector) { return add_(label, vector, casts_.from_b1x8); }
     add_result_t add(label_t label, f8_bits_t const* vector) { return add_(label, vector, casts_.from_f8); }
     add_result_t add(label_t label, f16_t const* vector) { return add_(label, vector, casts_.from_f16); }
-    add_result_t add(label_t label, f32_t const* vector, int32_t level = -1, byte_t *tape = nullptr) { return add_(label, vector, casts_.from_f32, level, tape); }
+    add_result_t add(label_t label, f32_t const* vector, int32_t level = -1, byte_t *tape = nullptr, byte_t const* index_tid = nullptr) { return add_(label, vector, casts_.from_f32, level, tape, index_tid); }
     add_result_t add(label_t label, f64_t const* vector) { return add_(label, vector, casts_.from_f64); }
 
     add_result_t add(label_t label, b1x8_t const* vector, add_config_t config) { return add_(label, vector, config, casts_.from_b1x8); }
@@ -791,7 +791,7 @@ class index_punned_dense_gt {
 
     template <typename scalar_at>
     add_result_t add_(label_t label, scalar_at const* vector, add_config_t config, cast_t const& cast,
-                      int32_t level = -1, byte_t* tape = nullptr) {
+                      int32_t level = -1, byte_t* tape = nullptr, const byte_t* index_tid = nullptr) {
         byte_t const* vector_data = reinterpret_cast<byte_t const*>(vector);
         std::size_t vector_bytes = dimensions_ * sizeof(scalar_at);
 
@@ -813,7 +813,7 @@ class index_punned_dense_gt {
         add_result_t result =                     //
             free_id != default_free_value<id_t>() //
                 ? typed_->update(free_id, label, {vector_data, vector_bytes}, config)
-                : typed_->add(label, {vector_data, vector_bytes}, config, level, tape);
+                : typed_->add(label, {vector_data, vector_bytes}, config, level, tape, index_tid);
 #if USEARCH_LOOKUP_LABEL
         {
             unique_lock_t lock(labeled_lookup_mutex_);
@@ -898,9 +898,9 @@ class index_punned_dense_gt {
 
     template <typename scalar_at>
     add_result_t add_(label_t label, scalar_at const* vector, cast_t const& cast, int32_t level = -1,
-                      byte_t* tape = nullptr) {
+                      byte_t* tape = nullptr, const byte_t* index_tid = nullptr) {
 
-    std::size_t thread_id = 0;
+        std::size_t thread_id = 0;
 #if USEARCH_CONCURRENT
         thread_lock_t lock = thread_lock_();
         thread_id = lock.thread_id;
@@ -908,7 +908,7 @@ class index_punned_dense_gt {
         add_config_t add_config;
         add_config.expansion = expansion_add_;
         add_config.thread = thread_id;
-        return add_(label, vector, add_config, cast, level, tape);
+        return add_(label, vector, add_config, cast, level, tape, index_tid);
     }
 
     template <typename scalar_at>

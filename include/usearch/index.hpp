@@ -79,6 +79,7 @@
 #include <iterator>   // `std::reverse_iterator`
 #include <mutex>      // `std::unique_lock` - replacement candidate
 #include <random>     // `std::default_random_engine` - replacement candidate
+#include <set>        // `std::set`
 #include <stdexcept>  // `std::runtime_exception`
 #include <thread>     // `std::thread`
 #include <utility>    // `std::pair`
@@ -1249,9 +1250,9 @@ struct precomputed_constants_t {
     precomputed_constants_t(index_config_t const& config) noexcept
         : inverse_log_connectivity(1.0 / std::log(static_cast<double>(config.connectivity))),
           connectivity_max_base(config.connectivity * base_level_multiple()),
-          neighbors_bytes(config.connectivity * sizeof(id_t) + sizeof(neighbors_count_t)),
+          neighbors_bytes(config.connectivity * 8 + sizeof(neighbors_count_t)),
           // todo:: is it ok to use one init variable from another in this kind of initializers?
-          neighbors_base_bytes(connectivity_max_base * sizeof(id_t) + sizeof(neighbors_count_t)) {}
+          neighbors_base_bytes(connectivity_max_base * 8 + sizeof(neighbors_count_t)) {}
 };
 
 struct index_limits_t {
@@ -1700,6 +1701,7 @@ class index_gt {
     static constexpr std::size_t node_head_bytes_() { return sizeof(label_t) + sizeof(dim_t) + sizeof(level_t); }
 
     using visits_bitset_t = visits_bitset_gt<dynamic_allocator_t>;
+    using visits_set_t = std::set<id_t>;
 
     struct candidate_t {
         distance_t distance;
@@ -1782,7 +1784,7 @@ class index_gt {
     struct usearch_align_m context_t {
         top_candidates_t top_candidates{};
         next_candidates_t next_candidates{};
-        visits_bitset_t visits{};
+        visits_set_t visits{};
         std::default_random_engine level_generator{};
         metric_t metric{};
         std::size_t iteration_cycles{};
@@ -1822,11 +1824,11 @@ class index_gt {
     // is responsible for providing an appropriate node retriever and storage facilities.
     // the non-pointer node_with_id_ member function is still available as builtin_node_with_id_()
     // todo:: uint32_t here should be id_t. change it once I figure out a way to enforce these in the c bindings
-    std::function<node_t(std::uint32_t)> node_with_id_ = [this](std::uint32_t idx) { return nodes_[idx]; };
+    std::function<node_t(id_t)> node_with_id_ = [this](id_t idx) { return nodes_[idx]; };
     // same as above. Used for mutable access to nodes, in case the external storage treats immutable and mutable
     // accesses differently. (E.g., LanternDB locks WAL blocks exclusively for mutable access and returns a reference
     // but returns a copy on immutable access)
-    std::function<node_t(std::uint32_t)> node_with_id_mut_ = [this](std::uint32_t idx) { return nodes_[idx]; };
+    std::function<node_t(id_t)> node_with_id_mut_ = [this](id_t idx) { return nodes_[idx]; };
     bool custom_node_retriever_ = false;
     bool debug_node_retriever_ = false;
 
@@ -2013,14 +2015,6 @@ class index_gt {
             context_t& context = new_contexts[i];
             new (&context) context_t();
             context.metric = metric_;
-            if (!context.visits.resize(limits.members)) {
-                for (std::size_t j = 0; j != i; ++j)
-                    context.visits.reset();
-                if (new_nodes)
-                    node_allocator.deallocate(new_nodes, limits.members);
-                context_allocator.deallocate(new_contexts, limits_threads);
-                return false;
-            }
         }
 
         // We have passed all the require memory allocations.
@@ -2032,7 +2026,7 @@ class index_gt {
             std::swap(old_context.next_candidates, context.next_candidates);
             std::swap(old_context.iteration_cycles, context.iteration_cycles);
             std::swap(old_context.measurements_count, context.measurements_count);
-            old_context.visits.reset();
+            old_context.visits.clear();
         }
 
         // Move the nodes info, and deallocate previous buffers when not using external storage.
@@ -2167,7 +2161,7 @@ class index_gt {
      *  @param[in] tape The tape to use for the new vector add operation (external storage only).
      */
     add_result_t add(label_t label, vector_view_t vector, add_config_t config = {}, level_t level = -1,
-                     byte_t* tape = nullptr) usearch_noexcept_m {
+                     byte_t* tape = nullptr, const byte_t* index_tid = nullptr) usearch_noexcept_m {
 
         usearch_assert_m(!is_immutable(), "Can't add to an immutable index");
         add_result_t result;
@@ -2210,7 +2204,7 @@ class index_gt {
                 return result.failed("Node init failed. Bad tape?");
         }
         std::size_t old_size = size_.fetch_add(1);
-        id_t new_id = static_cast<id_t>(old_size);
+        id_t new_id = static_cast<id_t>(*reinterpret_cast<const id_t*>(index_tid));
         if (!custom_node_retriever_) {
             // node internally stored. save the node we just allocated
             nodes_[old_size] = node;
@@ -2222,7 +2216,7 @@ class index_gt {
 #endif
 
         // Do nothing for the first element
-        if (!new_id) {
+        if (!old_size) {
             entry_id_ = new_id;
             max_level_ = target_level;
             return result;
@@ -2757,7 +2751,7 @@ class index_gt {
 #pragma endregion
 
 #pragma region External Index
-    using node_retriever_t = void* (*)(void* ctx, int index);
+    using node_retriever_t = void* (*)(void* ctx, id_t index);
     /** @brief The function sets the immutable and mutable getters for externally stored index nodes
      *         The caller must ensure the following properties for each kind of retriever:
      *         Immutable retriever:
@@ -2785,7 +2779,7 @@ class index_gt {
 #ifdef DEBUG_RETRIEVER
         debug_node_retriever_ = true;
 #endif
-        node_with_id_ = [this, retriever_ctx, external_node_retriever](size_t index) {
+        node_with_id_ = [this, retriever_ctx, external_node_retriever](id_t index) {
             byte_t* tape = (byte_t*)external_node_retriever(retriever_ctx, index);
             dim_t dim = misaligned_load<dim_t>(tape + sizeof(label_t));
             level_t level = misaligned_load<level_t>(tape + sizeof(label_t) + sizeof(dim_t));
@@ -3358,7 +3352,7 @@ class index_gt {
     bool search_to_insert_( //
         id_t start_id, vector_view_t query, level_t level, std::size_t top_limit, context_t& context) noexcept {
 
-        visits_bitset_t& visits = context.visits;
+        visits_set_t& visits = context.visits;
         next_candidates_t& next = context.next_candidates; // pop min, push
         top_candidates_t& top = context.top_candidates;    // pop max, push
 
@@ -3369,7 +3363,7 @@ class index_gt {
         distance_t radius = context.measure(query, node_with_id_(start_id));
         next.insert_reserved({-radius, start_id});
         top.insert_reserved({radius, start_id});
-        visits.set(start_id);
+        visits.insert(start_id);
 
         while (!next.empty()) {
 
@@ -3389,10 +3383,10 @@ class index_gt {
 
             prefetch_neighbors_(candidate_neighbors, visits);
             for (id_t successor_id : candidate_neighbors) {
-                if (visits.test(successor_id))
+                if (visits.find(successor_id) != visits.end())
                     continue;
 
-                visits.set(successor_id);
+                visits.insert(successor_id);
                 distance_t successor_dist = context.measure(query, node_with_id_(successor_id));
 
                 if (top.size() < top_limit || successor_dist < radius) {
@@ -3417,7 +3411,7 @@ class index_gt {
         id_t start_id, vector_view_t query, std::size_t expansion, context_t& context,
         predicate_at&& predicate) const noexcept {
 
-        visits_bitset_t& visits = context.visits;
+        visits_set_t& visits = context.visits;
         next_candidates_t& next = context.next_candidates; // pop min, push
         top_candidates_t& top = context.top_candidates;    // pop max, push
         std::size_t const top_limit = expansion;
@@ -3429,7 +3423,7 @@ class index_gt {
         distance_t radius = context.measure(query, node_with_id_(start_id));
         next.insert_reserved({-radius, start_id});
         top.insert_reserved({radius, start_id});
-        visits.set(start_id);
+        visits.insert(start_id);
 
         while (!next.empty()) {
 
@@ -3445,10 +3439,10 @@ class index_gt {
 
             prefetch_neighbors_(candidate_neighbors, visits);
             for (id_t successor_id : candidate_neighbors) {
-                if (visits.test(successor_id))
+                if (visits.find(successor_id) != visits.end())
                     continue;
 
-                visits.set(successor_id);
+                visits.insert(successor_id);
                 node_t successor = node_with_id_(successor_id);
                 distance_t successor_dist = context.measure(query, successor);
 
@@ -3489,7 +3483,7 @@ class index_gt {
         }
     }
 
-    void prefetch_neighbors_(neighbors_ref_t, visits_bitset_t const&) const noexcept {}
+    void prefetch_neighbors_(neighbors_ref_t, visits_set_t const&) const noexcept {}
 
     /**
      *  @brief  This algorithm from the original paper implements a heuristic,
