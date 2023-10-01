@@ -285,6 +285,18 @@ USEARCH_EXPORT size_t usearch_search(                                           
     return result.dump_to(found_labels, found_distances);
 }
 
+USEARCH_EXPORT size_t usearch_search_with_tapes(                                                            //
+    usearch_index_t index, void const* vector, usearch_scalar_kind_t kind, size_t results_limit, //
+    usearch_label_t* found_labels, usearch_distance_t* found_distances, char** found_tapes, usearch_error_t* error) {
+    search_result_t result = search_(reinterpret_cast<index_t*>(index), vector, to_native_scalar(kind), results_limit);
+    if (!result) {
+        *error = result.error.what();
+        return 0;
+    }
+
+    return result.dump_to_with_tapes(found_labels, found_distances, found_tapes);
+}
+
 #if USEARCH_LOOKUP_LABEL
 USEARCH_EXPORT bool usearch_get(                  //
     usearch_index_t index, usearch_label_t label, //

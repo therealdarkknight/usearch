@@ -2156,11 +2156,28 @@ class index_gt {
             node_t node = index_.node_with_id_(candidate.id);
             return {member_cref_t{node.label(), node.vector_view(), candidate.id}, candidate.distance};
         }
+        inline byte_t* tape_at(std::size_t i) const noexcept {
+            candidate_t const* top_ordered = top_.data();
+            candidate_t candidate = top_ordered[i];
+            node_t node = index_.node_with_id_(candidate.id);
+            return node.tape();
+        }
         inline std::size_t dump_to(label_t* labels, distance_t* distances) const noexcept {
             for (std::size_t i = 0; i != count; ++i) {
                 match_t result = operator[](i);
                 labels[i] = result.member.label;
                 distances[i] = result.distance;
+            }
+            return count;
+        }
+        inline std::size_t dump_to_with_tapes(label_t* labels, distance_t* distances, char** tapes) const noexcept {
+            for (std::size_t i = 0; i != count; ++i) {
+                match_t result = operator[](i);
+                labels[i] = result.member.label;
+                distances[i] = result.distance;
+                // dump the vector tape here as well to assist LanternDB's index with index-only scans (since this memory also holds tuple data)
+                char* tape = (char*)tape_at(i);
+                tapes[i] = tape;
             }
             return count;
         }
